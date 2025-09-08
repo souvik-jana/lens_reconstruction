@@ -1,6 +1,7 @@
 import jax.numpy as jnp
 from jax import grad
 import jax.scipy.spatial.transform
+import herculens as hcl
 rotation = jax.scipy.spatial.transform.Rotation
 
 # Define the fold caustic potential 
@@ -13,9 +14,9 @@ class FoldCausticPotential(object):
     upper_limit_default = {'psixx': 100, 'psiyy': 100, 'psixxx': 100}
     fixed_default = {key: False for key in param_names}
 
-    def __init__(self):
+    def __init__(self, kwargs_lens_list_default=[{"psixx": 0.91, "psiyy": -0.1, "psixxx": -0.1}]):
         self.center_x, self.center_y = 0., 0.
-        self.kwargs_lens_list_default = [{"psixx": 0.91, "psiyy": -0.1, "psixxx": -0.1}]
+        self.kwargs_lens_list_default = kwargs_lens_list_default
         super(FoldCausticPotential, self).__init__()
 
     def function(self, x, y, psixx=None, psiyy=None, psixxx=None):
@@ -139,6 +140,38 @@ class CausticExpansion():
         nabla_detA_rot = rotation_matrix @ nabla_detA
         return nabla_detA, nabla_detA_rot
     
+    def get_derivatives_to_third(self, x, y, R=None):
+        ''' Compute all derivatives of the potential up to third order at (x, y).
+        
+        :param x: x-coord (in angles)
+        :param y: y-coord (in angles)
+        :param R: optional rotation matrix to apply to the derivatives. Options: None, 'x-align-critical' (align x-axis perpendicular to critical curve), or a custom 2x2 rotation matrix.
+        
+        :return: dictionary of derivatives
+        '''
+        # Define the potential as a function of (x, y)
+        f = lambda xy: self.lens_mass_model.potential(xy[0], xy[1], self.kwargs_lens_list)
+        # Compute gradients using jax automatic differentiation
+        grad_func = grad(f)
+        hess_func = jax.jacfwd(grad_func)
+        third_deriv_func = jax.jacfwd(jax.jacfwd(jax.jacfwd(f)))
+        f_ij = hess_func(jnp.array([x, y]))
+        f_ijk = third_deriv_func(jnp.array([x, y]))
+        if R == 'x-align-critical':
+            nabla_detA, nabla_detA_rot = self.get_nabla_detA(x, y)
+            x_unit = jnp.array([1.0, 0.0])
+            R=create_rotation_matrix(vec_original=nabla_detA, vec_target=x_unit) # Align the x-axis perpendicular to the critical curve
+        if R is not None:
+            # Rotate the derivatives using the rotation matrix R
+            f_ij = R @ f_ij @ R.T
+            f_ijk = jnp.einsum('ia,jb,kc,abc->ijk', R, R, R, f_ijk)
+        return f_ij, f_ijk
+
+from grid import create_grid
+def get_critical_lines_caustics(lens_mass_model, kwargs_lens_list, pixel_grid=create_grid(-3, 3, -3, 3, 300, 300)[0]):
+    lens_image = hcl.LensImage(lens_mass_model_class=lens_mass_model, grid_class=pixel_grid, psf_class=hcl.PSF(psf_type="NONE"))
+    return hcl.Util.model_util.critical_lines_caustics(lens_image, kwargs_lens_list)
+
 def create_rotation_matrix(vec_original, vec_target):
     """Create a 2D rotation matrix that aligns the vec_original to vec_target.
 

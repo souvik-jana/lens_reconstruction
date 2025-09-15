@@ -1,7 +1,32 @@
 # Add to .gitignore
+# macOS system files
 .DS_Store
 */.DS_Store
 **/.DS_Store
-.ipynb_checkpoints/
-__pycache__/
 
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+*/.ipynb_checkpoints/
+
+# Python cache files
+__pycache__/
+**/__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Python virtual environments
+venv/
+env/
+.env
+.venv
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS generated files
+.Trash-*
+Thumbs.db

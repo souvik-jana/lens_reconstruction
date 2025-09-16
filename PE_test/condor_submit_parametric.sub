@@ -1,0 +1,43 @@
+# Condor submit file for Parametric Gravitational Lensing PE Analysis
+# Submit with: condor_submit condor_submit_parametric.sub
+
+# Job identification
+Universe = vanilla
+Executable = /Users/souvik/Documents/herculens_project/PE_test/run_parametric_analysis.sh
+Arguments = $(theta_E) $(e1) $(e2) $(gamma1) $(gamma2)
+
+# Input and output files
+Input = /dev/null
+Output = /Users/souvik/Documents/herculens_project/PE_test/logs/$(ClusterId).$(Process).out
+Error = /Users/souvik/Documents/herculens_project/PE_test/logs/$(ClusterId).$(Process).err
+Log = /Users/souvik/Documents/herculens_project/PE_test/logs/$(ClusterId).$(Process).log
+
+# Resource requirements
+RequestMemory = 8GB
+RequestCpus = 4
+RequestDisk = 2GB
+
+# Job requirements
+Requirements = (OpSys == "LINUX") && (Arch == "X86_64")
+
+# Environment setup
+Environment = "PATH=/usr/bin:/bin:/usr/local/bin"
+
+# Job attributes
+JobBatchName = "LensingPE_Parametric"
+Priority = 10
+
+# Transfer files
+ShouldTransferFiles = YES
+WhenToTransferOutput = ON_EXIT
+TransferInputFiles = /Users/souvik/Documents/herculens_project/PE_test/herculens_pe_analysis.py,/Users/souvik/Documents/herculens_project/PE_test/test_setup.py
+
+# Parameter sweep
+# theta_E, e1, e2, gamma1, gamma2
+1.0, 0.1, 0.05, 0.01, 0.02
+1.2, 0.15, 0.08, 0.015, 0.025
+1.5, 0.2, 0.1, 0.02, 0.03
+1.8, 0.25, 0.12, 0.025, 0.035
+2.0, 0.3, 0.15, 0.03, 0.04
+
+Queue

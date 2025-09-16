@@ -1,0 +1,36 @@
+# Condor submit file for Multiple Gravitational Lensing PE Analysis Jobs
+# Submit with: condor_submit condor_submit_multiple.sub
+
+# Job identification
+Universe = vanilla
+Executable = /Users/souvik/Documents/herculens_project/PE_test/run_analysis.sh
+Arguments = $(Process)
+
+# Input and output files
+Input = /dev/null
+Output = /Users/souvik/Documents/herculens_project/PE_test/logs/$(ClusterId).$(Process).out
+Error = /Users/souvik/Documents/herculens_project/PE_test/logs/$(ClusterId).$(Process).err
+Log = /Users/souvik/Documents/herculens_project/PE_test/logs/$(ClusterId).$(Process).log
+
+# Resource requirements
+RequestMemory = 8GB
+RequestCpus = 4
+RequestDisk = 2GB
+
+# Job requirements
+Requirements = (OpSys == "LINUX") && (Arch == "X86_64")
+
+# Environment setup
+Environment = "PATH=/usr/bin:/bin:/usr/local/bin"
+
+# Job attributes
+JobBatchName = "LensingPE_Multi"
+Priority = 10
+
+# Transfer files
+ShouldTransferFiles = YES
+WhenToTransferOutput = ON_EXIT
+TransferInputFiles = /Users/souvik/Documents/herculens_project/PE_test/herculens_pe_analysis.py,/Users/souvik/Documents/herculens_project/PE_test/test_setup.py
+
+# Queue multiple jobs (change number as needed)
+Queue 5

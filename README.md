@@ -55,7 +55,13 @@ The notebook requires:
 - **lensimage_gw.py**: Provides `LensImageGW` class for computing GW lensing observables
 - **jaxcosmo.py**: Provides `JAXCosmology` class for cosmological distance calculations
 - **fisher.py**: Provides `FisherMatrix` class for Fisher information matrix analysis
-- **corner_plot.py**: Utilities for creating corner plots (currently imported but not actively used)
+- **corner_plot_utils.py**: Comprehensive utilities for creating corner plots with:
+  - Multiple dataset comparisons (e.g., HMC vs Fisher)
+  - Custom legends with colored patches
+  - Parameter range settings
+  - Grouped parameter plots
+  - Truth value overlays
+  - See `corner_plot_utils_example.py` for usage examples
 
 ## Data Files
 

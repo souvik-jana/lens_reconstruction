@@ -505,6 +505,142 @@ def plot_comparison_corner(
     return figures
 
 
+def plot_multi_comparison_corner(
+    samples_dicts: List[Dict[str, np.ndarray]],
+    param_groups: Dict[str, List[str]],
+    labels: List[str],
+    colors: List[str],
+    truths_dict: Optional[Dict[str, Dict[str, float]]] = None,
+    truth_color: str = 'red',
+    show_titles: bool = True,
+    title_kwargs: Optional[Dict] = None,
+    title_fmt: str = '.3f',
+    param_ranges: Optional[Dict[str, Tuple[float, float]]] = None,
+    save_path: Optional[str] = None,
+    **corner_kwargs
+) -> List[plt.Figure]:
+    """Create grouped corner plots comparing multiple sets of samples.
+    
+    Parameters
+    ----------
+    samples_dicts : list[dict[str, np.ndarray]]
+        List of sample dictionaries to compare (e.g., [samples, samples_cov, samples_approx]).
+    param_groups : dict[str, list[str]]
+        Dictionary mapping group names to lists of parameter names.
+    labels : list[str]
+        Labels for each dataset (must match length of samples_dicts).
+    colors : list[str]
+        Colors for each dataset (must match length of samples_dicts).
+    truths_dict : dict[str, dict[str, float]] or None
+        Dictionary mapping group names to dictionaries of truth values.
+    truth_color : str
+        Color for truth value lines.
+    show_titles : bool
+        Whether to show parameter titles on plots.
+    title_kwargs : dict or None
+        Keyword arguments for title formatting.
+    title_fmt : str
+        Format string for titles.
+    param_ranges : dict[str, tuple[float, float]] or None
+        Dictionary mapping parameter names to (min, max) ranges.
+    save_path : str or None
+        If provided, save each plot with this path pattern (use {group_name} placeholder).
+    **corner_kwargs
+        Additional keyword arguments passed to corner.corner().
+    
+    Returns
+    -------
+    figures : list[matplotlib.figure.Figure]
+        List of figure objects for each group.
+    """
+    if len(samples_dicts) != len(labels) or len(samples_dicts) != len(colors):
+        raise ValueError(f"Length mismatch: samples_dicts ({len(samples_dicts)}), "
+                        f"labels ({len(labels)}), colors ({len(colors)})")
+    
+    if title_kwargs is None:
+        title_kwargs = {'fontsize': 10}
+    
+    figures = []
+    
+    for group_name, params in param_groups.items():
+        # Filter params to only those present in all sample sets
+        params = [p for p in params if all(p in sd for sd in samples_dicts)]
+        if len(params) < 1:
+            continue
+        
+        # Get samples for this group from all datasets
+        samples_grouped = []
+        for sd in samples_dicts:
+            samples_grouped.append({p: sd[p] for p in params})
+        
+        # Convert to arrays
+        samples_arrays = [np.column_stack([np.asarray(sg[p]) for p in params]) 
+                         for sg in samples_grouped]
+        
+        # Get truths for this group
+        truths_grouped = truths_dict.get(group_name) if truths_dict else None
+        truths_list = [truths_grouped.get(p) if truths_grouped and p in truths_grouped else None 
+                       for p in params] if truths_grouped else None
+        
+        # Create first corner plot
+        fig = corner.corner(
+            samples_arrays[0], 
+            labels=params, 
+            color=colors[0], 
+            truth_color=truth_color,
+            show_titles=show_titles,
+            title_kwargs=title_kwargs,
+            title_fmt=title_fmt,
+            quantiles=[0.05, 0.5, 0.975],
+            **corner_kwargs
+        )
+        
+        # Add truth lines manually
+        if truths_list is not None:
+            add_truth_lines(fig, params, truths_list, color=truth_color)
+        
+        # Overlay additional datasets
+        for samples_array, color in zip(samples_arrays[1:], colors[1:]):
+            _ = corner.corner(
+                samples_array, 
+                labels=params, 
+                color=color, 
+                fig=fig,
+                show_titles=show_titles,
+                title_kwargs=title_kwargs,
+                title_fmt=title_fmt,
+                **corner_kwargs
+            )
+        
+        # Add legend
+        add_corner_legend(
+            fig=fig,
+            labels=labels,
+            colors=colors,
+            loc='upper right',
+            bbox=(0.995, 0.995),
+            fontsize=10,
+        )
+        
+        # Set parameter ranges if provided
+        if param_ranges:
+            set_corner_axis_ranges(fig, params, param_ranges)
+        
+        # Add title
+        plt.suptitle(f'{group_name.replace("_", " ").title()}', 
+                    fontsize=12, y=1.02)
+        
+        # Save if requested
+        if save_path:
+            save_name = save_path.format(group_name=group_name)
+            plt.savefig(save_name, bbox_inches='tight', dpi=300)
+            print(f"Saved: {save_name}")
+        
+        figures.append(fig)
+    
+    return figures
+
+
 def create_default_param_groups(samples_dict: Dict[str, np.ndarray]) -> Dict[str, List[str]]:
     """Create default parameter groups from a samples dictionary.
     

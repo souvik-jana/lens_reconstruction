@@ -60,6 +60,8 @@ lens_reconstruction/
 
 ## Quick Start
 
+> **⚠️ Work in Progress**: This package is currently under active development and is not yet ready for general use. The API may change and features may be incomplete.
+
 ### Using the Package
 
 ```python

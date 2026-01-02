@@ -120,10 +120,6 @@ pip install -e .
 
 - **Data**: Saved samples and truths are stored in `data/`
 - **Plots**: Generated corner plots and figures are saved to `plots/`
-  - Key comparison plots for results reduction:
-    - `comparison_fisher_DL12_EM_GW_GW_image_positions.jpg` - Posteriors of GW image positions 
-    - `comparison_fisher_DL12_EM_GW_lens_mass.jpg` - Posteriors of Lens mass parameters 
-
-  ![GW Image Positions](plots/comparison_fisher_DL12_EM_GW_GW_image_positions.jpg)
+  - Comparison of different parameter estimation methods: derivative approximation, Fisher matrix, and HMC (see `plots/` directory for all comparison plots)
   
   ![Lens Mass Parameters](plots/comparison_fisher_DL12_EM_GW_lens_mass.jpg) 

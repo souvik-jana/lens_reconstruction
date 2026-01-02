@@ -1,3 +1,4 @@
 notebooks/EM_GW_PE_MCMC_HMC_copy3.ipynb filter=lfs diff=lfs merge=lfs -text
 notebooks/EM_GW_PE_MCMC_HMC.ipynb filter=lfs diff=lfs merge=lfs -text
 notebooks/EM_GW_PE_MCMC_HMC_copy.ipynb filter=lfs diff=lfs merge=lfs -text
+*.ipynb filter=lfs diff=lfs merge=lfs -text

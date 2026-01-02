@@ -1,81 +1,122 @@
-# Herculens Project - Gravitational Lensing Parameter Estimation
+# Herculens Project - Parametric Lens Reconstruction for Strongly Lensed EM+GW Systems
 
-This repository contains code for gravitational lensing parameter estimation using HMC (Hamiltonian Monte Carlo) methods, combining electromagnetic (EM) and gravitational wave (GW) observations.
+This repository contains code for parametric lens reconstruction of strongly lensed electromagnetic (EM) and gravitational wave (GW) systems, including Bayesian parameter estimation using Hamiltonian Monte Carlo (HMC), likelihood derivative approximations, and Fisher matrix analysis.
+
+## Main Package: GWEMFISH
+
+The **GWEMFISH** package (`gwemfish/`) contains the finalized scripts for parametric lens reconstruction of strongly lensed electromagnetic (EM) and gravitational wave (GW) systems.
+
+GWEMFISH provides:
+- **Bayesian Parameter Estimation**: Posterior inference using Hamiltonian Monte Carlo (HMC) with NUTS sampler
+- **Likelihood Derivative Approximations**: Computation of gradients and Hessians (and higher order matrices if needed) for approximate posterior estimation
+- **Fisher Matrix Analysis**: Approximate posterior estimation using Fisher information matrix
+
+See [`gwemfish/README.md`](gwemfish/README.md) for package documentation and usage.
 
 ## Directory Structure
 
 ```
 herculens_project/
-├── notebooks/
-│   ├── EM_GW_PE_MCMC_HMC.ipynb         # Main analysis notebook
-│   └── EM_GW_PE_MCMC_HMC_copy.ipynb    # Backup copy
-├── scripts/
-│   ├── lensimage_gw.py                  # GW lensing helper functions
-│   ├── jaxcosmo.py                      # JAX-based cosmology functions
-│   ├── fisher.py                        # Fisher matrix analysis
-│   ├── corner_plot_utils.py              # Corner plot utilities (main)
-│   ├── corner_plot_utils_example.py      # Usage examples for corner plots
-│   └── corner_plot.py                   # Legacy corner plot utilities
-├── data/
-│   ├── samples_PE_EM.pkl                # Posterior samples (EM only)
-│   ├── samples_PE_EM_GW.pkl            # Posterior samples (EM + GW)
-│   ├── samples_fisher_EM.pkl            # Fisher matrix samples (EM)
-│   ├── samples_fisher_EM_GW.pkl        # Fisher matrix samples (EM + GW)
-│   ├── truths_PE_EM.pkl                 # True parameter values
-│   ├── truths_PE_EM.csv                 # True parameter values (CSV)
-│   ├── truths_PE_EM_GW.pkl             # True parameter values (EM + GW)
-│   └── truths_PE_EM_GW.csv             # True parameter values (EM + GW, CSV)
-└── plots/
-    └── [generated corner plots]          # Output plots saved here
+├── gwemfish/                    # Main package (GWEMFISH)
+│   ├── README.md               # Package documentation
+│   ├── __init__.py
+│   ├── config.py
+│   ├── data_sim.py
+│   ├── fisher.py
+│   ├── inference.py
+│   ├── jax_config.py
+│   ├── jaxcosmo.py
+│   ├── lens_setup.py
+│   ├── lensimage_gw.py
+│   ├── prob_model.py
+│   └── corner_plot_utils.py
+│
+├── examples/                    # User-facing examples
+│   ├── notebooks/              # Example notebooks
+│   │   └── example_notebook.ipynb
+│   └── scripts/                # Example scripts
+│       └── example_usage.py
+│
+├── notebooks/                   # Development notebooks (work-in-progress)
+│   ├── README.md               # See this for development notebook info
+│   ├── EM_GW_PE_MCMC_HMC.ipynb
+│   └── EM_GW_PE_MCMC_HMC_copy.ipynb
+│
+├── scripts/                     # Standalone utilities
+│   ├── lensimage_gw.py
+│   ├── jaxcosmo.py
+│   ├── fisher.py
+│   └── corner_plot_utils.py
+│
+├── data/                        # Output data (samples, truths)
+│   ├── samples_PE_EM.pkl
+│   ├── samples_PE_EM_GW.pkl
+│   ├── samples_fisher_EM_GW.pkl
+│   └── truths_PE_EM_GW.pkl
+│
+└── plots/                       # Generated plots
+    └── [corner plots and figures]
 ```
 
-## Main Notebook
+## Quick Start
 
-The main notebook `EM_GW_PE_MCMC_HMC.ipynb` performs:
-- Gravitational lensing parameter estimation using HMC
-- Combined electromagnetic (EM) and gravitational wave (GW) analysis
-- Fisher matrix computation and comparison
-- Posterior distribution visualization using utility functions
+### Using the Package
+
+```python
+from gwemfish import setup_jax, setup_lens, simulate_em, simulate_gw, ProbModel, run_mcmc
+
+# Setup and run inference
+setup_jax(ncpus=8, enable_x64=True, platform='cpu')
+# ... see examples/ for complete usage
+```
+
+### Examples
+
+- **Jupyter Notebook**: See `examples/notebooks/example_notebook.ipynb`
+- **Python Script**: See `examples/scripts/example_usage.py`
+
+### Development Notebooks
+
+Development notebooks in `notebooks/` are work-in-progress and not intended for distribution. See [`notebooks/README.md`](notebooks/README.md) for details.
 
 ## Dependencies
 
-The notebook requires:
+- `jax` / `jaxlib` - Numerical computing
+- `numpyro` - Probabilistic programming framework
 - `herculens` - Gravitational lensing library
 - `jaxtronomy` - JAX-based astronomy tools
-- `numpyro` - Probabilistic programming framework
-- `jax` - JAX numerical computing library
-- `astropy` - Astronomy library
-- `corner` - Corner plot visualization
 - `matplotlib` - Plotting library
+- `corner` - Corner plot visualization
+- `numpy`, `scipy` - Scientific computing
 
-## Usage
+## Installation
 
-1. Ensure all dependencies are installed
-2. Open `notebooks/EM_GW_PE_MCMC_HMC.ipynb` in Jupyter
-3. The notebook automatically adds the `scripts/` directory to the Python path
-4. Data files are loaded from the `data/` directory
-5. Generated plots are automatically saved to the `plots/` directory
+```bash
+# Install core dependencies
+pip install jax jaxlib numpyro herculens matplotlib numpy scipy corner
 
-## Scripts
+# Install gwemfish package (development mode)
+cd /path/to/herculens_project
+pip install -e .
+```
 
-- **lensimage_gw.py**: Provides `LensImageGW` class for computing GW lensing observables
-- **jaxcosmo.py**: Provides `JAXCosmology` class for cosmological distance calculations
-- **fisher.py**: Provides `FisherMatrix` class for Fisher information matrix analysis
-- **corner_plot_utils.py**: Comprehensive utilities for creating corner plots with:
-  - Multiple dataset comparisons (e.g., HMC vs Fisher)
-  - Custom legends with colored patches
-  - Parameter range settings
-  - Grouped parameter plots
-  - Truth value overlays
-  - Automatic plot saving
-  - See `corner_plot_utils_example.py` for usage examples
-- **corner_plot.py**: Legacy corner plot utilities (deprecated, use `corner_plot_utils.py`)
+## Features
 
-## Data Files
+- **Parametric Lens Reconstruction**: Joint modeling of lens mass, source light, and lens light profiles
+- **Joint EM+GW Parameter Estimation**: Bayesian inference combining lensed galaxy images and gravitational wave time delays
+- **Hamiltonian Monte Carlo**: NUTS (No-U-Turn Sampler) for efficient posterior sampling
+- **Likelihood Derivatives**: Automatic computation of gradients and Hessians for optimization
+- **Fisher Matrix Analysis**: Fast approximate posterior estimation using Fisher information matrix
+- **Flexible Lens Models**: Support for various lens mass models (EPL, SHEAR, etc.)
+- **Source Plane Inference**: Option to sample source positions and solve for images
 
-All data files (samples and truths) are stored in the `data/` directory. The notebook loads these files for analysis and visualization.
+## Documentation
+
+- **Package Documentation**: [`gwemfish/README.md`](gwemfish/README.md)
+- **Development Notebooks**: [`notebooks/README.md`](notebooks/README.md)
+- **Examples**: See `examples/` directory
 
 ## Output
 
-Generated corner plots are automatically saved to the `plots/` directory with descriptive filenames based on parameter groups (e.g., `corner_PE_EM_GW_lens_mass.pdf`, `corner_fisher_EM_GW_source_light.pdf`).
-
+- **Data**: Saved samples and truths are stored in `data/`
+- **Plots**: Generated corner plots and figures are saved to `plots/`

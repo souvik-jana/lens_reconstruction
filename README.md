@@ -1,4 +1,4 @@
-# Herculens Project - Parametric Lens Reconstruction for Strongly Lensed EM+GW Systems
+# Lens Reconstruction - Parametric Lens Reconstruction for Strongly Lensed EM+GW Systems
 
 This repository contains code for parametric lens reconstruction of strongly lensed electromagnetic (EM) and gravitational wave (GW) systems, including Bayesian parameter estimation using Hamiltonian Monte Carlo (HMC), likelihood derivative approximations, and Fisher matrix analysis.
 
@@ -16,7 +16,7 @@ See [`gwemfish/README.md`](gwemfish/README.md) for package documentation and usa
 ## Directory Structure
 
 ```
-herculens_project/
+lens_reconstruction/
 ├── gwemfish/                    # Main package (GWEMFISH)
 │   ├── README.md               # Package documentation
 │   ├── __init__.py
@@ -96,7 +96,7 @@ Development notebooks in `notebooks/` are work-in-progress and not intended for 
 pip install jax jaxlib numpyro herculens matplotlib numpy scipy corner
 
 # Install gwemfish package (development mode)
-cd /path/to/herculens_project
+cd /path/to/lens_reconstruction
 pip install -e .
 ```
 
@@ -120,3 +120,10 @@ pip install -e .
 
 - **Data**: Saved samples and truths are stored in `data/`
 - **Plots**: Generated corner plots and figures are saved to `plots/`
+  - Key comparison plots for results reduction:
+    - `comparison_fisher_DL12_EM_GW_GW_image_positions.pdf` - Posteriors of GW image positions 
+    - `comparison_fisher_DL12_EM_GW_lens_mass.pdf` - Posteriors of Lens mass parameters 
+
+  ![GW Image Positions Comparison](plots/comparison_fisher_DL12_EM_GW_GW_image_positions.pdf)
+  
+  ![Lens Mass Parameters Comparison](plots/comparison_fisher_DL12_EM_GW_lens_mass.pdf) 

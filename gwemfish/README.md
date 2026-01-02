@@ -26,7 +26,7 @@ GWEMFISH uses:
 pip install jax jaxlib numpyro herculens matplotlib numpy scipy
 
 # Install gwemfish (if using as package)
-cd /path/to/herculens_project
+cd /path/to/lens_reconstruction
 pip install -e .
 ```
 

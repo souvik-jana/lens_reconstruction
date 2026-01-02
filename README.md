@@ -124,6 +124,6 @@ pip install -e .
     - `comparison_fisher_DL12_EM_GW_GW_image_positions.jpg` - Posteriors of GW image positions 
     - `comparison_fisher_DL12_EM_GW_lens_mass.jpg` - Posteriors of Lens mass parameters 
 
-  ![GW Image Positions](plots/comparison_fisher_DL12_EM_GW_GW_image_positions.png)
+  ![GW Image Positions](plots/comparison_fisher_DL12_EM_GW_GW_image_positions.jpg)
   
-  ![Lens Mass Parameters](plots/comparison_fisher_DL12_EM_GW_lens_mass.png) 
+  ![Lens Mass Parameters](plots/comparison_fisher_DL12_EM_GW_lens_mass.jpg) 

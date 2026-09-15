@@ -430,6 +430,16 @@ COMPLETE_CFG = {
         "n_fisher_samples": 5000,  # int. method='fisher'/'fisher-source' only: number of Gaussian
                                    # draws N(u0, cov).
         "fisher_order": 2,         # int. compute_fisher's Taylor order (2 = Hessian/quadratic).
+        # Newton–Raphson maxP polish before Fisher expansion / Gaussian sampling.
+        # Evaluates g,H at the *given* (truth) values, then jumps u ← u - H^{-1} g
+        # toward the mode (at most max_jumps times), then compute_fisher expands
+        # at the landed point. truths_dict stays at the given values.
+        "newton_maxp": {
+            "enabled": True,   # bool. False => bit-for-bit old behavior (expand at truth).
+            "max_jumps": 2,    # int. Max Newton steps (recompute g,H each jump).
+            "grad_tol": 1e-8,  # float. Stop early when ||g|| < grad_tol.
+            "verbose": True,   # bool. Print per-jump |g| / |du|.
+        },
         "rng_key": 123,            # int. Seeds setup/likelihood/Fisher/MCMC PRNGKeys (same value
                                    # reused for all of them inside run_inference).
         "prior_sample_rng_key": 123,  # int. Seeds the one-shot probmodel.get_sample() call used to

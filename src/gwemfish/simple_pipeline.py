@@ -380,6 +380,14 @@ def make_default_cfg() -> Dict[str, Any]:
             # Gaussian (Hessian) sampling uses `n_fisher_samples`.
             "n_fisher_samples": 5000,
             "fisher_order": 2,
+            # After evaluating g/H at the given (truth) values, Newton–Raphson
+            # jump toward maxP / MAP and re-expand Fisher there. max_jumps=2.
+            "newton_maxp": {
+                "enabled": True,
+                "max_jumps": 2,
+                "grad_tol": 1e-8,
+                "verbose": True,
+            },
             "rng_key": 123,
             # How the one-shot get_sample() PRNGKey is seeded.
             "prior_sample_rng_key": 123,
@@ -1908,7 +1916,7 @@ def run_inference(
         ProbModel_EM_only,
     )
     from .inference import run_mcmc, run_mcmc_informed
-    from .fisher import compute_fisher
+    from .fisher import compute_fisher, newton_raphson_maxp
     from .diagnostics import diagnose_system
 
     # Prefer the simulation/setup configuration already attached to `ctx`.
@@ -2049,18 +2057,48 @@ def run_inference(
     ctx["likelihood"]["keys_to_include"] = keys_to_include
     ctx["likelihood"]["check_contributions"] = contributions
 
-    u0 = jnp.asarray([input_params[k] for k in keys_to_include], dtype=jnp.float64)
+    u0_given = jnp.asarray([input_params[k] for k in keys_to_include], dtype=jnp.float64)
+    ctx["likelihood"]["u0_given"] = u0_given
+    # Truths / fixed labels stay at the given values; Fisher expands at u0 (possibly MAP).
+    truths_dict = {k: float(input_params[k]) for k in keys_all}
+
+    # Newton–Raphson maxP polish: evaluate g/H at the given point, jump ≤ max_jumps
+    # toward the mode, then expand Fisher / sample Gaussian there.
+    newton_cfg = dict(cfg_full.get("inference", {}).get("newton_maxp") or {})
+    newton_enabled = bool(newton_cfg.get("enabled", True))
+    u0 = u0_given
+    input_params_fisher = input_params
+    if newton_enabled:
+        u0, newton_info = newton_raphson_maxp(
+            logdensity_fn_vec,
+            u0_given,
+            max_jumps=int(newton_cfg.get("max_jumps", 2)),
+            grad_tol=float(newton_cfg.get("grad_tol", 1e-8)),
+            verbose=bool(newton_cfg.get("verbose", True)),
+        )
+        input_params_fisher = dict(input_params)
+        for i, key in enumerate(keys_to_include):
+            input_params_fisher[key] = u0[i]
+        ctx["likelihood"]["newton_maxp"] = {
+            "n_jumps": newton_info["n_jumps"],
+            "grad_norm": newton_info["grad_norm"],
+            "u_map": newton_info["u_map"],
+            "u0_given": newton_info["u0_given"],
+        }
     ctx["likelihood"]["u0"] = u0
     # --- DEBUG ---
     print("use_mst in probmodel:", probmodel.use_mst)
     print("k_mst in keys_to_include:", "k_mst" in keys_to_include)
     print("k_mst truth:", ctx["truth_params"].get("k_mst"))
     print("keys_to_include:", keys_to_include)
-    print("input_params:", {k: input_params[k] for k in keys_to_include})
+    print("input_params (given):", {k: input_params[k] for k in keys_to_include})
+    if newton_enabled:
+        print("expansion u0 (after newton_maxp):",
+              {k: float(u0[i]) for i, k in enumerate(keys_to_include)})
 # --- END DEBUG ---
     approx_logp, logp0, g0, H0, F0, Q0 = compute_fisher(
         model=probmodel.model,
-        input_params=input_params,
+        input_params=input_params_fisher,
         keys_to_include=keys_to_include,
         u0=u0,
         rng_key=jax.random.PRNGKey(fisher_seed),
@@ -2097,7 +2135,7 @@ def run_inference(
     # because u0 is unscaled (y1gw ~ 1e-6 alongside theta_E ~ 2).
     g0_scaled = g0 / jnp.sqrt(jnp.abs(h_diag))
     ctx['fisher']['g0_scaled'] = g0_scaled
-    print("Scaled gradient at truth (g0 / sqrt|diag H0|):")
+    print("Scaled gradient at expansion point (g0 / sqrt|diag H0|):")
     for key, gs in zip(keys_to_include, g0_scaled):
         print(f"  {key:24s} {float(gs): .4e}")
 
@@ -2109,8 +2147,6 @@ def run_inference(
         g0=g0, H0=H0, keys=keys_to_include, level=diag_level,
     )
     ctx["diagnostics"] = diagnostics_report
-
-    truths_dict = {k: float(input_params[k]) for k in keys_all}
 
     # Fisher-only: sample from Gaussian N(u0, cov)
     priors_for_fisher = priors_flex if priors_flex is not None else priors_combined

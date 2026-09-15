@@ -73,6 +73,115 @@ from numpyro.handlers import seed
     
 #     return approx_logp, logp0, g0, H0#, F0, Q0
 
+def newton_raphson_maxp(
+    logdensity_fn_vec,
+    u0,
+    *,
+    max_jumps=2,
+    grad_tol=1e-8,
+    verbose=True,
+):
+    """Newton–Raphson ascent of ``logdensity_fn_vec`` toward its maxP / MAP.
+
+    Evaluates the gradient ``g`` and Hessian ``H`` of the log-density at the
+    *given* point (the Fisher expansion start), then takes
+    ``u ← u - H^{-1} g`` (standard Newton for maximizing a scalar). At most
+    ``max_jumps`` steps (default 2); stops early if ``||g|| < grad_tol``.
+
+    For a quadratic log-density one jump lands exactly on the mode; a second
+    jump (with recomputed ``g``, ``H``) corrects mild non-quadraticity.
+
+    Args:
+        logdensity_fn_vec: Callable ``u -> log p(u)`` (same shape as ``u0``).
+        u0: Starting parameter vector (given / truth values).
+        max_jumps: Maximum Newton steps (default 2).
+        grad_tol: Early-stop threshold on ``||g||``.
+        verbose: Print per-jump diagnostics.
+
+    Returns:
+        u_map: Parameter vector after the jumps.
+        info: Dict with ``n_jumps``, ``grad_norm``, ``history`` (list of
+            per-jump ``u`` / ``g`` / ``grad_norm`` / ``step_norm``), and the
+            final ``g`` / ``H`` at ``u_map``.
+    """
+    import numpy as np
+
+    if max_jumps < 0:
+        raise ValueError(f"max_jumps must be >= 0, got {max_jumps}")
+
+    u = jnp.asarray(u0, dtype=jnp.float64)
+    grad_fn = jax.jacfwd(logdensity_fn_vec)
+    hess_fn = jax.hessian(logdensity_fn_vec)
+
+    history = []
+    n_jumps = 0
+    g = grad_fn(u)
+    H = hess_fn(u)
+
+    for j in range(int(max_jumps)):
+        gnorm = float(jnp.linalg.norm(g))
+        if verbose:
+            print(f"[newton_maxp] at start of jump {j + 1}: |g|={gnorm:.3e}")
+        if gnorm < float(grad_tol):
+            if verbose:
+                print(
+                    f"[newton_maxp] |g| < grad_tol ({grad_tol:g}); "
+                    f"stopping before jump {j + 1}"
+                )
+            history.append(
+                {
+                    "u": np.asarray(u),
+                    "g": np.asarray(g),
+                    "grad_norm": gnorm,
+                    "step_norm": 0.0,
+                    "skipped": True,
+                }
+            )
+            break
+
+        # Maximize logp: stationary point of g + H du = 0 → du = -H^{-1} g
+        # solved as H du = g, then u ← u - du.
+        du = jnp.linalg.solve(H, g)
+        step_norm = float(jnp.linalg.norm(du))
+        u = u - du
+        n_jumps += 1
+        history.append(
+            {
+                "u": np.asarray(u),
+                "g": np.asarray(g),
+                "grad_norm": gnorm,
+                "step_norm": step_norm,
+                "skipped": False,
+            }
+        )
+        if verbose:
+            print(
+                f"[newton_maxp] jump {n_jumps}: |du|={step_norm:.3e} "
+                f"(from |g|={gnorm:.3e})"
+            )
+
+        g = grad_fn(u)
+        H = hess_fn(u)
+
+    gnorm_final = float(jnp.linalg.norm(g))
+    if verbose:
+        print(
+            f"[newton_maxp] done: n_jumps={n_jumps}, "
+            f"|g|_final={gnorm_final:.3e}"
+        )
+
+    info = {
+        "n_jumps": int(n_jumps),
+        "grad_norm": gnorm_final,
+        "g": g,
+        "H": H,
+        "history": history,
+        "u0_given": np.asarray(u0),
+        "u_map": np.asarray(u),
+    }
+    return u, info
+
+
 def compute_fisher(model, input_params, keys_to_include, u0, rng_key=None, order=2):
     """Compute Fisher matrix approximation (Hessian) and Taylor expansion.
     

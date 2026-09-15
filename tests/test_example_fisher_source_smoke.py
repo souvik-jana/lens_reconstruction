@@ -43,6 +43,10 @@ def example_fisher_result():
             "priors": {
                 "lens1_ra_0": float(0.0),
                 "lens1_dec_0": float(0.0),
+                # Pin noise for noiseless EM image (free σ MAP is σ→0).
+                "noise_sigma_bkg": float(
+                    ctx["cfg"]["em"]["noise_simu_kwargs"]["background_rms"]
+                ),
             },
             "output": {
                 "output_dir": None,  # skip writing results in CI/smoke
@@ -69,11 +73,18 @@ def test_example_fisher_source_returns_samples(example_fisher_result):
 
 
 def test_example_fisher_source_newton_maxp_default_on(example_fisher_result):
-    """Default newton_maxp runs (≤2 jumps); truths stay at given values."""
+    """Default newton_maxp runs until MAP; truths stay at given values."""
     ctx, samples, truths = example_fisher_result
     info = (ctx.get("likelihood") or {}).get("newton_maxp")
     assert info is not None, "newton_maxp should run with default enabled=True"
-    assert 0 <= info["n_jumps"] <= 2
+    assert info["n_jumps"] >= 0
+    assert "map_params" in info
+    assert np.isfinite(info["grad_norm_scaled"])
+    assert info["converged"], (
+        f"expected MAP convergence, scaled|g|={info['grad_norm_scaled']}, "
+        f"n_jumps={info['n_jumps']}"
+    )
+    assert info["grad_norm_scaled"] < 5e-2
 
     u0_given = np.asarray(ctx["likelihood"]["u0_given"])
     keys = ctx["likelihood"]["keys_to_include"]
@@ -81,3 +92,7 @@ def test_example_fisher_source_newton_maxp_default_on(example_fisher_result):
     for i, k in enumerate(keys):
         if k in truths:
             assert truths[k] == pytest.approx(float(u0_given[i]), rel=0, abs=1e-10)
+        assert k in info["map_params"]
+        assert info["map_params"][k] == pytest.approx(
+            float(info["u_map"][i]), rel=0, abs=1e-12
+        )

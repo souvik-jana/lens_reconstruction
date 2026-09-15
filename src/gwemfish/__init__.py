@@ -59,7 +59,12 @@ from .nautilus_source_inference import (
     validate_helens_solver,
 )
 from .nautilus_image_inference import build_image_plane_problem
-from .fisher import compute_fisher, newton_raphson_maxp
+from .fisher import (
+    compute_fisher,
+    default_param_floors,
+    format_map_params,
+    newton_raphson_maxp,
+)
 from .config import (
     arcsecond_to_radians,
     Mpc_to_m,
@@ -143,6 +148,8 @@ __all__ = [
     'validate_helens_solver',
     'compute_fisher',
     'newton_raphson_maxp',
+    'format_map_params',
+    'default_param_floors',
     'arcsecond_to_radians',
     'Mpc_to_m',
     'c',

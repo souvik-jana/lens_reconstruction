@@ -431,14 +431,20 @@ COMPLETE_CFG = {
                                    # draws N(u0, cov).
         "fisher_order": 2,         # int. compute_fisher's Taylor order (2 = Hessian/quadratic).
         # Newton–Raphson maxP polish before Fisher expansion / Gaussian sampling.
-        # Evaluates g,H at the *given* (truth) values, then jumps u ← u - H^{-1} g
-        # toward the mode (at most max_jumps times), then compute_fisher expands
-        # at the landed point. truths_dict stays at the given values.
+        # Evaluates g,H at the *given* (truth) values, then jumps with an
+        # NSD-modified Newton + Armijo line search until ||g|| < grad_tol
+        # (or max_jumps if set), then compute_fisher expands at the landed MAP.
+        # truths_dict stays at the given values.
         "newton_maxp": {
-            "enabled": True,   # bool. False => bit-for-bit old behavior (expand at truth).
-            "max_jumps": 2,    # int. Max Newton steps (recompute g,H each jump).
-            "grad_tol": 1e-8,  # float. Stop early when ||g|| < grad_tol.
-            "verbose": True,   # bool. Print per-jump |g| / |du|.
+            "enabled": True,     # bool. False => expand at truth (old behavior).
+            "max_jumps": None,   # int|None. None => jump until scaled|g|<grad_tol.
+            "grad_tol": 5e-2,    # float. max_i |g_i|/sqrt(|H_ii|) (projected).
+            "verbose": True,     # bool. Print per-jump |g| / |du| / alpha.
+            "line_search": True, # bool. Armijo backtrack (recommended).
+            "apply_default_floors": True,  # bool. Floor positive-at-start params.
+            "floor_rel": 1e-3,   # float. floor_i = max(floor_abs, floor_rel*|u0_i|).
+            "floor_abs": 1e-12,  # float. Absolute floor for positive starts.
+            # Note: keys containing "sigma" are pinned at the given value.
         },
         "rng_key": 123,            # int. Seeds setup/likelihood/Fisher/MCMC PRNGKeys (same value
                                    # reused for all of them inside run_inference).

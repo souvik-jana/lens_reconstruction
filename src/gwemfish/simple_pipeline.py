@@ -381,12 +381,18 @@ def make_default_cfg() -> Dict[str, Any]:
             "n_fisher_samples": 5000,
             "fisher_order": 2,
             # After evaluating g/H at the given (truth) values, Newton–Raphson
-            # jump toward maxP / MAP and re-expand Fisher there. max_jumps=2.
+            # jumps until MAP (|g|<grad_tol), then re-expand Fisher there.
+            # max_jumps=None => keep jumping until convergence (safety cap inside).
             "newton_maxp": {
                 "enabled": True,
-                "max_jumps": 2,
-                "grad_tol": 1e-8,
+                "max_jumps": None,
+                "grad_tol": 5e-2,
                 "verbose": True,
+                "line_search": True,
+                # Floor positive-at-start params; pin *sigma* at given (noiseless-safe).
+                "apply_default_floors": True,
+                "floor_rel": 1e-3,
+                "floor_abs": 1e-12,
             },
             "rng_key": 123,
             # How the one-shot get_sample() PRNGKey is seeded.
@@ -1916,7 +1922,12 @@ def run_inference(
         ProbModel_EM_only,
     )
     from .inference import run_mcmc, run_mcmc_informed
-    from .fisher import compute_fisher, newton_raphson_maxp
+    from .fisher import (
+        compute_fisher,
+        default_param_floors,
+        format_map_params,
+        newton_raphson_maxp,
+    )
     from .diagnostics import diagnose_system
 
     # Prefer the simulation/setup configuration already attached to `ctx`.
@@ -2062,29 +2073,57 @@ def run_inference(
     # Truths / fixed labels stay at the given values; Fisher expands at u0 (possibly MAP).
     truths_dict = {k: float(input_params[k]) for k in keys_all}
 
-    # Newton–Raphson maxP polish: evaluate g/H at the given point, jump ≤ max_jumps
-    # toward the mode, then expand Fisher / sample Gaussian there.
+    # Newton–Raphson maxP polish: jump until |g|<grad_tol (or max_jumps), then
+    # expand Fisher / sample Gaussian at the landed MAP.
     newton_cfg = dict(cfg_full.get("inference", {}).get("newton_maxp") or {})
     newton_enabled = bool(newton_cfg.get("enabled", True))
     u0 = u0_given
     input_params_fisher = input_params
     if newton_enabled:
+        _mj = newton_cfg.get("max_jumps", None)
+        max_jumps = None if _mj is None else int(_mj)
+        floors = None
+        if bool(newton_cfg.get("apply_default_floors", True)):
+            floors = default_param_floors(
+                keys_to_include,
+                u0_given,
+                rel=float(newton_cfg.get("floor_rel", 1e-3)),
+                abs_floor=float(newton_cfg.get("floor_abs", 1e-12)),
+            )
         u0, newton_info = newton_raphson_maxp(
             logdensity_fn_vec,
             u0_given,
-            max_jumps=int(newton_cfg.get("max_jumps", 2)),
-            grad_tol=float(newton_cfg.get("grad_tol", 1e-8)),
+            max_jumps=max_jumps,
+            grad_tol=float(newton_cfg.get("grad_tol", 5e-2)),
             verbose=bool(newton_cfg.get("verbose", True)),
+            line_search=bool(newton_cfg.get("line_search", True)),
+            floors=floors,
         )
         input_params_fisher = dict(input_params)
+        map_params = {}
         for i, key in enumerate(keys_to_include):
+            map_params[key] = float(u0[i])
             input_params_fisher[key] = u0[i]
         ctx["likelihood"]["newton_maxp"] = {
             "n_jumps": newton_info["n_jumps"],
             "grad_norm": newton_info["grad_norm"],
+            "grad_norm_scaled": newton_info["grad_norm_scaled"],
+            "converged": newton_info["converged"],
+            "logp": newton_info["logp"],
             "u_map": newton_info["u_map"],
             "u0_given": newton_info["u0_given"],
+            "map_params": map_params,
         }
+        print(
+            format_map_params(
+                keys_to_include,
+                newton_info["u_map"],
+                newton_info["u0_given"],
+                grad_norm=newton_info["grad_norm_scaled"],
+                n_jumps=newton_info["n_jumps"],
+                logp=newton_info["logp"],
+            )
+        )
     ctx["likelihood"]["u0"] = u0
     # --- DEBUG ---
     print("use_mst in probmodel:", probmodel.use_mst)

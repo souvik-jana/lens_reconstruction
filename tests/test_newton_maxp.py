@@ -124,9 +124,11 @@ def test_format_map_params_table():
 def test_default_floors_pin_sigma():
     from gwemfish.fisher import default_param_floors
 
-    keys = ["theta", "noise_sigma_bkg", "amp"]
-    u0 = np.array([2.0, 0.01, 0.5])
+    keys = ["theta_E", "noise_sigma_bkg", "amp", "y1gw", "lens0_e1"]
+    u0 = np.array([2.0, 0.01, 0.5, 1e-6, 0.05])
     floors = default_param_floors(keys, u0, rel=1e-3)
-    assert floors[0] == pytest.approx(2e-3)
+    assert floors[0] == pytest.approx(2e-3)  # theta_E positive
     assert floors[1] == pytest.approx(0.01)  # sigma pinned at given
-    assert floors[2] == pytest.approx(5e-4)
+    assert floors[2] == pytest.approx(5e-4)  # amp positive
+    assert floors[3] == -np.inf  # source coord: not floored
+    assert floors[4] == -np.inf  # ellipticity: not floored

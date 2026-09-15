@@ -161,13 +161,33 @@ def _projected_grad_metrics(g, H, u, floors, eps=1e-14):
     return float(np.linalg.norm(g_proj)), float(np.max(scaled) if scaled.size else 0.0)
 
 
+# Names that are physically positive (scale/size/index), not signed coordinates.
+_POSITIVE_PARAM_MARKERS = (
+    "amp",
+    "r_sersic",
+    "n_sersic",
+    "theta_e",
+    "sigma",
+    "t_star",
+    "dl",
+    "exposure",
+)
+
+
+def _is_physically_positive_key(key: str) -> bool:
+    k = str(key).lower()
+    return any(m in k for m in _POSITIVE_PARAM_MARKERS)
+
+
 def default_param_floors(keys, u0, *, rel=1e-3, abs_floor=1e-12):
-    """Lower bounds for positive-at-start parameters (stops σ→0 ridges).
+    """Lower bounds for physically positive parameters (stops σ→0 ridges).
 
     - Keys containing ``sigma``: floor at the given value (pin noise scale; on
       noiseless data free σ→0 is an unbounded MAP ridge).
-    - Other positive starts: floor ``max(abs_floor, rel*|u0_i|)``.
-    - Non-positive starts: unbounded below (``-inf``).
+    - Other *physically positive* keys (amp, R/n_sersic, theta_E, T_star, dL, …)
+      with ``u0_i > 0``: floor ``max(abs_floor, rel*|u0_i|)``.
+    - Signed coordinates (centers, ellipticities, shears, y0gw/y1gw, …) are
+      unbounded below even if the given start happens to be positive.
     """
     import numpy as np
 
@@ -177,11 +197,12 @@ def default_param_floors(keys, u0, *, rel=1e-3, abs_floor=1e-12):
         raise ValueError(f"keys length {len(keys)} != u0 size {u0.size}")
     floors = np.full(u0.shape, -np.inf, dtype=np.float64)
     for i, (k, v) in enumerate(zip(keys, u0)):
-        if v > 0.0:
-            if "sigma" in str(k).lower():
-                floors[i] = float(v)
-            else:
-                floors[i] = max(float(abs_floor), float(rel) * float(v))
+        if v <= 0.0 or not _is_physically_positive_key(k):
+            continue
+        if "sigma" in str(k).lower():
+            floors[i] = float(v)
+        else:
+            floors[i] = max(float(abs_floor), float(rel) * float(v))
     return floors
 
 

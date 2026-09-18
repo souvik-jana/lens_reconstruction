@@ -1,0 +1,3 @@
+# nautilus checkpoints (675 MB), posteriors and plots -- all regenerable
+# by re-running the scripts here. The .log files carry every result as text.
+outputs/

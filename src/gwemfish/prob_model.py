@@ -7,7 +7,12 @@ import numpyro
 import numpyro.distributions as dist
 import herculens as hcl
 from .data_sim import compute_gw_from_images
-from .config import arcsecond_to_radians, Mpc_to_m, c, SOLVER_PARAMS, e1e2_to_qphi
+from .config import arcsecond_to_radians, Mpc_to_m, c, SOLVER_PARAMS
+from .ellipticity_reparam import (
+    compute_qphi_ellipticity,
+    validate_parametrization,
+    warn_if_ellipticity_prior_keys_unused,
+)
 from .lens_setup import image_count_penalty, remove_central_image, solve_and_select
 
 
@@ -50,6 +55,12 @@ def _build_prior_lens(lens_theta_E, lens_e1, lens_e2, lens_gamma,
             'dec_0':  dec_0,
         }
     ]
+
+
+def _sample_lens_ellipticity(p, parametrization):
+    if parametrization == "q_phi":
+        return compute_qphi_ellipticity('lens', p)
+    return p['lens_e1'](), p['lens_e2']()
 
 
 def _sample_image_positions(n_images, priors, image_position_priors):
@@ -98,7 +109,8 @@ class ProbModel(hcl.NumpyroModel):
     def __init__(self, n_images=4, gw_observations=None, em_observations=None,
                  lens_image=None, lens_gw=None, noise=None,
                  priors=None, image_position_priors=None, image_positions=None,
-                 gw_error_scales=None, use_mst: bool = False):
+                 gw_error_scales=None, use_mst: bool = False,
+                 lens_parametrization="e1e2"):
         """
         Args:
             n_images:        Number of lensed images.
@@ -115,6 +127,7 @@ class ProbModel(hcl.NumpyroModel):
             gw_error_scales: Optional dict scaling GW likelihood uncertainties.
                              Keys: 'sigma_td', 'sigma_dL_eff', 'epsilon'.
             use_mst:         If True, include mass-sheet parameter ``k_mst`` in GW forward model.
+            lens_parametrization: "e1e2" (default) or "q_phi" -- see ellipticity_reparam.py.
         """
         self.n_images        = n_images
         self.gw_observations = gw_observations or {}
@@ -124,6 +137,8 @@ class ProbModel(hcl.NumpyroModel):
         self.noise           = noise
         self.use_mst         = bool(use_mst)
         self.pix_scl         = 0.4
+        self.lens_parametrization = validate_parametrization(lens_parametrization)
+        warn_if_ellipticity_prior_keys_unused(priors, self.lens_parametrization, ("lens",))
         self.priors          = {**_make_default_priors_em_gw(self.pix_scl), **(priors or {})}
         if image_positions is not None and image_position_priors is None:
             image_position_priors = image_positions
@@ -169,10 +184,14 @@ class ProbModel(hcl.NumpyroModel):
         }]
 
         # --- Lens mass ---
+        # Sample theta_E before e1/e2 so the numpyro RNG-split order matches the
+        # original (theta_E, e1, e2, gamma, ...) exactly in default e1e2 mode.
+        lens_theta_E = p['lens_theta_E']()
+        lens_e1, lens_e2 = _sample_lens_ellipticity(p, self.lens_parametrization)
         prior_lens = _build_prior_lens(
-            lens_theta_E  = p['lens_theta_E'](),
-            lens_e1       = p['lens_e1'](),
-            lens_e2       = p['lens_e2'](),
+            lens_theta_E  = lens_theta_E,
+            lens_e1       = lens_e1,
+            lens_e2       = lens_e2,
             lens_gamma    = p['lens_gamma'](),
             lens_center_x = p['lens_center_x'](),  # fixed or sampled via priors=
             lens_center_y = p['lens_center_y'](),  # fixed or sampled via priors=
@@ -283,7 +302,8 @@ class ProbModelSourcePlane(hcl.NumpyroModel):
     def __init__(self, n_images=4, gw_observations=None, em_observations=None,
                  lens_image=None, lens_gw=None, noise=None,
                  solver=None, solver_params=None, priors=None,
-                 gw_error_scales=None, use_mst: bool = False):
+                 gw_error_scales=None, use_mst: bool = False,
+                 lens_parametrization="e1e2"):
         """
         Args:
             n_images:        Number of lensed images (excluding central image).
@@ -301,6 +321,7 @@ class ProbModelSourcePlane(hcl.NumpyroModel):
             gw_error_scales: Optional dict scaling GW likelihood uncertainties.
                              Keys: 'sigma_td', 'sigma_dL_eff', 'epsilon'.
             use_mst:         If True, include mass-sheet ``k_mst`` in GW forward model.
+            lens_parametrization: "e1e2" (default) or "q_phi" -- see ellipticity_reparam.py.
         """
         self.n_images        = n_images
         self.gw_observations = gw_observations or {}
@@ -312,6 +333,8 @@ class ProbModelSourcePlane(hcl.NumpyroModel):
         self.solver          = solver
         self.solver_params   = solver_params if solver_params is not None else SOLVER_PARAMS.copy()
         self.pix_scl         = 0.4
+        self.lens_parametrization = validate_parametrization(lens_parametrization)
+        warn_if_ellipticity_prior_keys_unused(priors, self.lens_parametrization, ("lens",))
 
         _source_plane_defaults = {
             'y0gw': lambda: numpyro.sample('y0gw', dist.Uniform(0.045, 0.055)),
@@ -355,10 +378,14 @@ class ProbModelSourcePlane(hcl.NumpyroModel):
 
         lens_center_x = p['lens_center_x']()
         lens_center_y = p['lens_center_y']()
+        # Sample theta_E before e1/e2 so the numpyro RNG-split order matches the
+        # original (theta_E, e1, e2, gamma, ...) exactly in default e1e2 mode.
+        lens_theta_E = p['lens_theta_E']()
+        lens_e1, lens_e2 = _sample_lens_ellipticity(p, self.lens_parametrization)
         prior_lens = _build_prior_lens(
-            lens_theta_E  = p['lens_theta_E'](),
-            lens_e1       = p['lens_e1'](),
-            lens_e2       = p['lens_e2'](),
+            lens_theta_E  = lens_theta_E,
+            lens_e1       = lens_e1,
+            lens_e2       = lens_e2,
             lens_gamma    = p['lens_gamma'](),
             lens_center_x = lens_center_x,
             lens_center_y = lens_center_y,
@@ -485,7 +512,8 @@ class ProbModelSourcePlane_GW_only(hcl.NumpyroModel):
 
     def __init__(self, n_images=4, gw_observations=None, lens_gw=None,
                  solver=None, solver_params=None, priors=None,
-                 gw_error_scales=None, use_mst: bool = False):
+                 gw_error_scales=None, use_mst: bool = False,
+                 lens_parametrization="e1e2"):
         """
         Args:
             n_images:        Number of lensed images (excluding central image).
@@ -499,6 +527,7 @@ class ProbModelSourcePlane_GW_only(hcl.NumpyroModel):
             gw_error_scales: Optional dict scaling GW likelihood uncertainties.
                              Keys: 'sigma_td', 'sigma_dL_eff'.
             use_mst:         If True, include mass-sheet `k_mst` in GW forward model.
+            lens_parametrization: "e1e2" (default) or "q_phi" -- see ellipticity_reparam.py.
         """
         self.n_images        = n_images
         self.gw_observations = gw_observations or {}
@@ -506,6 +535,8 @@ class ProbModelSourcePlane_GW_only(hcl.NumpyroModel):
         self.use_mst         = bool(use_mst)
         self.solver          = solver
         self.solver_params   = solver_params if solver_params is not None else SOLVER_PARAMS.copy()
+        self.lens_parametrization = validate_parametrization(lens_parametrization)
+        warn_if_ellipticity_prior_keys_unused(priors, self.lens_parametrization, ("lens",))
 
         _source_plane_defaults = {
             'y0gw': lambda: numpyro.sample('y0gw', dist.Uniform(-1.0, 1.0)),
@@ -528,10 +559,14 @@ class ProbModelSourcePlane_GW_only(hcl.NumpyroModel):
 
         lens_center_x = p['lens_center_x']()
         lens_center_y = p['lens_center_y']()
+        # Sample theta_E before e1/e2 so the numpyro RNG-split order matches the
+        # original (theta_E, e1, e2, gamma, ...) exactly in default e1e2 mode.
+        lens_theta_E = p['lens_theta_E']()
+        lens_e1, lens_e2 = _sample_lens_ellipticity(p, self.lens_parametrization)
         prior_lens = _build_prior_lens(
-            lens_theta_E  = p['lens_theta_E'](),
-            lens_e1       = p['lens_e1'](),
-            lens_e2       = p['lens_e2'](),
+            lens_theta_E  = lens_theta_E,
+            lens_e1       = lens_e1,
+            lens_e2       = lens_e2,
             lens_gamma    = p['lens_gamma'](),
             lens_center_x = lens_center_x,
             lens_center_y = lens_center_y,
@@ -660,7 +695,7 @@ class ProbModel_EM_only(hcl.NumpyroModel):
     """EM-only probabilistic model (no GW likelihood)."""
 
     def __init__(self, em_observations=None, lens_image=None, noise=None,
-                 priors=None):
+                 priors=None, lens_parametrization="e1e2"):
         """
         Args:
             em_observations: Dict with 'data' key containing the EM observation.
@@ -668,11 +703,14 @@ class ProbModel_EM_only(hcl.NumpyroModel):
             noise: hcl.Noise instance configured for inference (background_rms=None).
             priors: Optional override dict. Expected to follow the numpyro-style
                     priors registry used in this module (zero-arg callables).
+            lens_parametrization: "e1e2" (default) or "q_phi" -- see ellipticity_reparam.py.
         """
         self.em_observations = em_observations or {}
         self.lens_image = lens_image
         self.noise = noise
         self.pix_scl = 0.4
+        self.lens_parametrization = validate_parametrization(lens_parametrization)
+        warn_if_ellipticity_prior_keys_unused(priors, self.lens_parametrization, ("lens",))
         self.priors = {**DEFAULT_PRIORS_EM_ONLY, **(priors or {})}
         super().__init__()
 
@@ -701,10 +739,14 @@ class ProbModel_EM_only(hcl.NumpyroModel):
             "center_y": p["light_center_y"](),
         }]
 
+        # Sample theta_E before e1/e2 so the numpyro RNG-split order matches the
+        # original (theta_E, e1, e2, gamma, ...) exactly in default e1e2 mode.
+        lens_theta_E = p["lens_theta_E"]()
+        lens_e1, lens_e2 = _sample_lens_ellipticity(p, self.lens_parametrization)
         prior_lens = _build_prior_lens(
-            lens_theta_E=p["lens_theta_E"](),
-            lens_e1=p["lens_e1"](),
-            lens_e2=p["lens_e2"](),
+            lens_theta_E=lens_theta_E,
+            lens_e1=lens_e1,
+            lens_e2=lens_e2,
             lens_gamma=p["lens_gamma"](),
             lens_center_x=p["lens_center_x"](),
             lens_center_y=p["lens_center_y"](),
@@ -737,7 +779,8 @@ class ProbModel_GW_only(hcl.NumpyroModel):
 
     def __init__(self, n_images=4, gw_observations=None, lens_gw=None,
                  priors=None, image_position_priors=None, image_positions=None,
-                 gw_error_scales=None, use_mst: bool = False):
+                 gw_error_scales=None, use_mst: bool = False,
+                 lens_parametrization="e1e2"):
         """
         Args:
             n_images:        Number of lensed images.
@@ -749,12 +792,15 @@ class ProbModel_GW_only(hcl.NumpyroModel):
             gw_error_scales: Optional dict scaling GW likelihood uncertainties.
                              Keys: 'sigma_td', 'sigma_dL_eff', 'epsilon'.
             use_mst:         If True, include mass-sheet ``k_mst`` in GW forward model.
+            lens_parametrization: "e1e2" (default) or "q_phi" -- see ellipticity_reparam.py.
         """
         self.n_images        = n_images
         self.gw_observations = gw_observations or {}
         self.lens_gw         = lens_gw
         self.use_mst         = bool(use_mst)
         self.pix_scl         = 0.4
+        self.lens_parametrization = validate_parametrization(lens_parametrization)
+        warn_if_ellipticity_prior_keys_unused(priors, self.lens_parametrization, ("lens",))
         self.priors          = {**DEFAULT_PRIORS_GW_ONLY, **(priors or {})}
         if image_positions is not None and image_position_priors is None:
             image_position_priors = image_positions
@@ -776,10 +822,14 @@ class ProbModel_GW_only(hcl.NumpyroModel):
         T_star = p['T_star']()
         dL     = p['dL']()
 
+        # Sample theta_E before e1/e2 so the numpyro RNG-split order matches the
+        # original (theta_E, e1, e2, gamma, ...) exactly in default e1e2 mode.
+        lens_theta_E = p['lens_theta_E']()
+        lens_e1, lens_e2 = _sample_lens_ellipticity(p, self.lens_parametrization)
         prior_lens = _build_prior_lens(
-            lens_theta_E  = p['lens_theta_E'](),
-            lens_e1       = p['lens_e1'](),
-            lens_e2       = p['lens_e2'](),
+            lens_theta_E  = lens_theta_E,
+            lens_e1       = lens_e1,
+            lens_e2       = lens_e2,
             lens_gamma    = p['lens_gamma'](),
             lens_center_x = p['lens_center_x'](),
             lens_center_y = p['lens_center_y'](),

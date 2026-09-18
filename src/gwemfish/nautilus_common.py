@@ -8,6 +8,13 @@ import jax.numpy as jnp
 import numpy as np
 import scipy.stats as sps
 
+from .ellipticity_reparam import (
+    expand_qphi_params,
+    mass_qphi_prefixes_from_entries,
+    swap_ellipticity_for_qphi,
+    validate_parametrization,
+    warn_if_ellipticity_prior_keys_unused,
+)
 from .priors import DEFAULT_PRIORS_GW_SOURCE_PLANE
 
 
@@ -231,8 +238,17 @@ def build_em_only_nautilus_problem(ctx, cfg):
     n_source = len(lens_image.SourceModel.func_list)
     n_lens_light = len(lens_image.LensLightModel.func_list)
 
+    parametrization = validate_parametrization(cfg_full.get("lens_mass_parametrization", "e1e2"))
+    qphi_prefixes = mass_qphi_prefixes_from_entries(entries, parametrization)
+    if qphi_prefixes:
+        swap_ellipticity_for_qphi(default_dists, qphi_prefixes)
+
     bounds = DEFAULT_PRIORS_GW_SOURCE_PLANE
     cfg_priors = cfg_full.get("priors", {})
+    warn_if_ellipticity_prior_keys_unused(
+        cfg_priors, parametrization,
+        qphi_prefixes or mass_qphi_prefixes_from_entries(entries, "q_phi"),
+    )
     scipy_overrides, cfg_fixed = parse_cfg_priors(cfg_priors, default_dists, bounds)
     fixed_params = {**registry_fixed, **cfg_fixed}
     prior = build_nautilus_prior(default_dists, bounds, scipy_overrides, fixed_params)
@@ -242,6 +258,7 @@ def build_em_only_nautilus_problem(ctx, cfg):
 
     def log_likelihood(params):
         full = {**fixed_params, **params}
+        full = expand_qphi_params(full, qphi_prefixes)
         kwargs_lens, kwargs_source, kwargs_lens_light = unpack_to_kwargs(
             full, entries, n_mass=n_mass,
             n_source=n_source, n_lens_light=n_lens_light,

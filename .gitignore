@@ -55,3 +55,6 @@ handoff.md
 !comparison-analysis/report/
 !comparison-analysis/report/**/
 !comparison-analysis/report/**/*.pdf
+
+# scratch analysis, not tracked
+q-phi-analysis/

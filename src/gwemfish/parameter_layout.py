@@ -14,6 +14,7 @@ import jax.numpy as jnp
 import numpyro
 import numpyro.distributions as dist
 
+from .ellipticity_reparam import default_qphi_priors, warn_if_ellipticity_prior_keys_unused
 from .profile_prior_rules import required_default_sampler
 
 
@@ -231,11 +232,19 @@ def build_priors_registry(
     lens_image=None,
     mass_model=None,
     user_priors: Optional[Dict[str, Any]] = None,
+    qphi_mass_components: Optional[frozenset] = None,
 ) -> Dict[str, Callable[[], Any]]:
     """
     Merge profile default samplers with ``user_priors`` (callables, Distributions, or fixed values).
 
     Pass ``lens_image`` for EM paths, or ``mass_model`` alone for GW-only (no ``LensImage``).
+
+    ``qphi_mass_components``: flat-key prefixes (e.g. {"lens0"}) of mass components
+    whose e1/e2 pair should instead be sampled as (q, phi) and converted -- see
+    ``ellipticity_reparam.py``. The registry still exposes '{prefix}_e1'/'{prefix}_e2'
+    (now derived, via ``compute_qphi_ellipticity``) so ``unpack_to_kwargs`` needs no
+    changes; it additionally exposes '{prefix}_q'/'{prefix}_phi' as the actual free
+    parameters.
     """
     if lens_image is not None:
         infer_shape = make_infer_array_shape(lens_image)
@@ -251,7 +260,25 @@ def build_priors_registry(
             param=e.param,
             infer_array_shape=infer_shape,
         )
+    # NOTE: this only adds '{prefix}_q'/'{prefix}_phi' default samplers to the
+    # registry -- it deliberately does NOT touch reg['{prefix}_e1']/['_e2']. Calling
+    # compute_qphi_ellipticity(prefix, reg) independently from both an e1 lookup and
+    # an e2 lookup would sample '{prefix}_q'/'{prefix}_phi' twice in one trace (a
+    # numpyro duplicate-site error). Callers (FlexProbModel*.model(), the nautilus
+    # builders) must call compute_qphi_ellipticity(prefix, p) themselves exactly
+    # once per component and skip the registry's e1/e2 entries for that component.
+    qphi_mass_components = qphi_mass_components or frozenset()
+    for prefix in qphi_mass_components:
+        reg.update(default_qphi_priors(prefix))
     user_priors = user_priors or {}
+    warn_if_ellipticity_prior_keys_unused(
+        user_priors,
+        "q_phi" if qphi_mass_components else "e1e2",
+        qphi_mass_components or {
+            e.flat_key[: -len("_e1")] for e in entries
+            if e.plane == "mass" and e.param == "e1"
+        },
+    )
     for name, val in user_priors.items():
         reg[name] = _normalize_user_prior(name, val)
     return reg

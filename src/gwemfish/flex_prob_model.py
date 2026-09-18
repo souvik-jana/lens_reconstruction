@@ -16,10 +16,37 @@ import herculens as hcl
 
 from .config import SOLVER_PARAMS
 from .data_sim import compute_gw_from_images
+from .ellipticity_reparam import compute_qphi_ellipticity
 from .lens_setup import image_count_penalty, remove_central_image, solve_and_select
 from .parameter_layout import ParamEntry, flat_keys, unpack_to_kwargs
 from .priors import DEFAULT_IMAGE_POSITION_PRIORS_EM, DEFAULT_IMAGE_POSITION_PRIORS_GW
 from .prob_model import _sample_image_positions
+
+
+def _qphi_skip_keys(qphi_mass_components):
+    """'{prefix}_e1'/'{prefix}_e2' flat keys to skip in the per-entry sampling loop
+    -- computed once per ProbModel instance (see each class's __init__) rather than
+    on every call to _sample_flat_entries (i.e. every trace / HMC step)."""
+    return {f"{prefix}_e1" for prefix in qphi_mass_components} | {
+        f"{prefix}_e2" for prefix in qphi_mass_components
+    }
+
+
+def _sample_flat_entries(entries, p, qphi_mass_components, skip_keys):
+    """Sample every ParamEntry into a flat dict, except e1/e2 pairs belonging to a
+    mass component in ``qphi_mass_components`` -- those are sampled jointly as
+    (q, phi) and converted once via compute_qphi_ellipticity, so lens{i}_e1/lens{i}_e2
+    end up in ``flat`` either way and unpack_to_kwargs needs no changes."""
+    flat = {}
+    for e in entries:
+        if e.flat_key in skip_keys:
+            continue
+        flat[e.flat_key] = p[e.flat_key]()
+    for prefix in qphi_mass_components:
+        e1, e2 = compute_qphi_ellipticity(prefix, p)
+        flat[f"{prefix}_e1"] = e1
+        flat[f"{prefix}_e2"] = e2
+    return flat
 
 
 def _default_extra_priors_em_gw() -> Dict[str, Callable[[], Any]]:
@@ -81,10 +108,13 @@ class FlexProbModelEMGW(hcl.NumpyroModel):
         gw_error_scales: Optional[Dict[str, Any]] = None,
         extra_priors: Optional[Dict[str, Callable[[], Any]]] = None,
         use_mst: bool = False,
+        qphi_mass_components: frozenset = frozenset(),
     ):
         self.entries = list(entries)
         self.priors = {**(_default_extra_priors_em_gw()), **(extra_priors or {}), **priors}
         self.use_mst = bool(use_mst)
+        self.qphi_mass_components = qphi_mass_components
+        self._qphi_skip_keys = _qphi_skip_keys(qphi_mass_components)
         self.n_mass = len(lens_image.MassModel.func_list)
         self.n_source = len(lens_image.SourceModel.func_list)
         self.n_lens_light = len(lens_image.LensLightModel.func_list)
@@ -108,9 +138,7 @@ class FlexProbModelEMGW(hcl.NumpyroModel):
 
     def model(self):
         p = self.priors
-        flat: Dict[str, Any] = {}
-        for e in self.entries:
-            flat[e.flat_key] = p[e.flat_key]()
+        flat = _sample_flat_entries(self.entries, p, self.qphi_mass_components, self._qphi_skip_keys)
         flat["noise_sigma_bkg"] = p["noise_sigma_bkg"]()
         flat["T_star"] = p["T_star"]()
         flat["dL"] = p["dL"]()
@@ -228,11 +256,14 @@ class FlexProbModelEMOnly(hcl.NumpyroModel):
         lens_image=None,
         noise=None,
         extra_priors: Optional[Dict[str, Callable[[], Any]]] = None,
-        use_mst: bool = False, 
+        use_mst: bool = False,
+        qphi_mass_components: frozenset = frozenset(),
     ):
         self.entries = list(entries)
         self.priors = {**(_default_extra_priors_em_only()), **(extra_priors or {}), **priors}
         self.use_mst = bool(use_mst)
+        self.qphi_mass_components = qphi_mass_components
+        self._qphi_skip_keys = _qphi_skip_keys(qphi_mass_components)
         self.n_mass = len(lens_image.MassModel.func_list)
         self.n_source = len(lens_image.SourceModel.func_list)
         self.n_lens_light = len(lens_image.LensLightModel.func_list)
@@ -243,9 +274,7 @@ class FlexProbModelEMOnly(hcl.NumpyroModel):
 
     def model(self):
         p = self.priors
-        flat: Dict[str, Any] = {}
-        for e in self.entries:
-            flat[e.flat_key] = p[e.flat_key]()
+        flat = _sample_flat_entries(self.entries, p, self.qphi_mass_components, self._qphi_skip_keys)
         flat["noise_sigma_bkg"] = p["noise_sigma_bkg"]()
 
         kl, ks, kll = unpack_to_kwargs(
@@ -290,10 +319,13 @@ class FlexProbModelGWOnly(hcl.NumpyroModel):
         gw_error_scales: Optional[Dict[str, Any]] = None,
         extra_priors: Optional[Dict[str, Callable[[], Any]]] = None,
         use_mst: bool = False,
+        qphi_mass_components: frozenset = frozenset(),
     ):
         self.entries = list(entries)
         self.priors = {**(_default_extra_priors_gw_only()), **(extra_priors or {}), **priors}
         self.use_mst = bool(use_mst)
+        self.qphi_mass_components = qphi_mass_components
+        self._qphi_skip_keys = _qphi_skip_keys(qphi_mass_components)
         self.n_mass = len(lens_gw.mass_model.func_list)
         self.n_images = n_images
         self.gw_observations = gw_observations or {}
@@ -312,9 +344,7 @@ class FlexProbModelGWOnly(hcl.NumpyroModel):
 
     def model(self):
         p = self.priors
-        flat: Dict[str, Any] = {}
-        for e in self.entries:
-            flat[e.flat_key] = p[e.flat_key]()
+        flat = _sample_flat_entries(self.entries, p, self.qphi_mass_components, self._qphi_skip_keys)
         flat["T_star"] = p["T_star"]()
         flat["dL"] = p["dL"]()
 
@@ -407,10 +437,13 @@ class FlexProbModelSourcePlaneGWOnly(hcl.NumpyroModel):
         gw_error_scales: Optional[Dict[str, Any]] = None,
         extra_priors: Optional[Dict[str, Callable[[], Any]]] = None,
         use_mst: bool = False,
+        qphi_mass_components: frozenset = frozenset(),
     ):
         self.entries = list(entries)
         self.priors = {**(_default_extra_priors_gw_only_source()), **(extra_priors or {}), **priors}
         self.use_mst = bool(use_mst)
+        self.qphi_mass_components = qphi_mass_components
+        self._qphi_skip_keys = _qphi_skip_keys(qphi_mass_components)
         self.n_mass = len(lens_gw.mass_model.func_list)
         self.n_images = n_images
         self.gw_observations = gw_observations or {}
@@ -426,9 +459,7 @@ class FlexProbModelSourcePlaneGWOnly(hcl.NumpyroModel):
 
     def model(self):
         p = self.priors
-        flat: Dict[str, Any] = {}
-        for e in self.entries:
-            flat[e.flat_key] = p[e.flat_key]()
+        flat = _sample_flat_entries(self.entries, p, self.qphi_mass_components, self._qphi_skip_keys)
         flat["T_star"] = p["T_star"]()
         flat["dL"] = p["dL"]()
         flat["y0gw"] = p["y0gw"]()
@@ -517,10 +548,13 @@ class FlexProbModelSourcePlaneEMGW(hcl.NumpyroModel):
         gw_error_scales: Optional[Dict[str, Any]] = None,
         extra_priors: Optional[Dict[str, Callable[[], Any]]] = None,
         use_mst: bool = False,
+        qphi_mass_components: frozenset = frozenset(),
     ):
         self.entries = list(entries)
         self.priors = {**(_default_extra_priors_em_gw_source()), **(extra_priors or {}), **priors}
         self.use_mst = bool(use_mst)
+        self.qphi_mass_components = qphi_mass_components
+        self._qphi_skip_keys = _qphi_skip_keys(qphi_mass_components)
         self.n_mass = len(lens_image.MassModel.func_list)
         self.n_source = len(lens_image.SourceModel.func_list)
         self.n_lens_light = len(lens_image.LensLightModel.func_list)
@@ -541,9 +575,7 @@ class FlexProbModelSourcePlaneEMGW(hcl.NumpyroModel):
 
     def model(self):
         p = self.priors
-        flat: Dict[str, Any] = {}
-        for e in self.entries:
-            flat[e.flat_key] = p[e.flat_key]()
+        flat = _sample_flat_entries(self.entries, p, self.qphi_mass_components, self._qphi_skip_keys)
         flat["noise_sigma_bkg"] = p["noise_sigma_bkg"]()
         flat["T_star"] = p["T_star"]()
         flat["dL"] = p["dL"]()

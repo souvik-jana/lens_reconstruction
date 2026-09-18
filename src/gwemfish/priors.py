@@ -11,6 +11,8 @@ import jax.numpy as jnp
 import numpyro
 import numpyro.distributions as dist
 
+from .ellipticity_reparam import default_qphi_priors
+
 
 def _make_default_priors_em_gw(pix_scl=0.4):
     """Return the default prior registry for EM+GW (joint) models."""
@@ -39,6 +41,10 @@ def _make_default_priors_em_gw(pix_scl=0.4):
         "lens_theta_E": lambda: numpyro.sample("lens_theta_E", dist.Uniform(0.0, 8.0)),
         "lens_e1": lambda: numpyro.sample("lens_e1", dist.TruncatedNormal(0.0, 0.3, low=-1.0, high=1.0)),
         "lens_e2": lambda: numpyro.sample("lens_e2", dist.TruncatedNormal(0.0, 0.3, low=-1.0, high=1.0)),
+        # Alternative (q, phi) parametrization -- only used when
+        # lens_mass_parametrization="q_phi"; present unconditionally so Fisher /
+        # deriv-approx (which look these keys up generically) always find them.
+        **default_qphi_priors("lens"),
         "lens_gamma": lambda: numpyro.sample("lens_gamma", dist.Uniform(1.5, 3.0)),
         # External shear components (gamma1/gamma2)
         "lens_gamma1": lambda: numpyro.sample("lens_gamma1", dist.Uniform(-0.3, 0.3)),
@@ -62,6 +68,8 @@ DEFAULT_PRIORS_GW_ONLY = {
     "lens_theta_E": lambda: numpyro.sample("lens_theta_E", dist.Uniform(0.1, 10.0)),
     "lens_e1": lambda: numpyro.sample("lens_e1", dist.TruncatedNormal(0.0, 0.6, low=-1.0, high=1.0)),
     "lens_e2": lambda: numpyro.sample("lens_e2", dist.TruncatedNormal(0.0, 0.6, low=-1.0, high=1.0)),
+    # Alternative (q, phi) parametrization -- see note in _make_default_priors_em_gw.
+    **default_qphi_priors("lens"),
     "lens_gamma": lambda: numpyro.sample("lens_gamma", dist.Uniform(1.1, 3.0)),
     # External shear components (gamma1/gamma2)
     "lens_gamma1": lambda: numpyro.sample("lens_gamma1", dist.Uniform(-0.3, 0.3)),

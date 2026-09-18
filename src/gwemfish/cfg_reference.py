@@ -594,6 +594,24 @@ COMPLETE_CFG = {
     # ValueError without it). Everywhere else, False remains a fully supported, non-breaking default.
     "use_parameter_layout": False,
 
+    # ---- cfg["lens_mass_parametrization"]: e1/e2 vs q/phi (all modes, all methods) -----------------
+    # "e1e2" (default) or "q_phi". Optional reparametrization of the main lens galaxy's mass
+    # ellipticity: instead of sampling e1/e2 directly, samples q (axis ratio, Uniform(0.01, 1.0))
+    # and phi (position angle in radians, Uniform(-pi/2, pi/2)), then derives e1/e2 via
+    # herculens.Util.param_util.phi_q2_ellipticity (matches lenstronomy's convention exactly --
+    # see ellipticity_reparam.py). e1/e2 are still registered as numpyro.deterministic sites, so
+    # they appear in every posterior/Fisher output exactly as before regardless of which
+    # parametrization was used to sample them -- corner plots, diagnostics, params2kwargs,
+    # to_source_plane_samples all keep working unchanged. Works uniformly across hmc, nautilus,
+    # nautilus-source, fisher, deriv-approx, and their -source variants; both
+    # use_parameter_layout=False (flat "lens_e1"/"lens_q"/"lens_phi") and True ("lens{i}_e1"/
+    # "lens{i}_q"/"lens{i}_phi" for the mass component using e1/e2 -- PIEMD/DPIE already sample
+    # q/phi natively and are unaffected). Override the q/phi priors themselves the same way as any
+    # other parameter, via cfg['priors']['lens_q']/['lens_phi'] (or 'lens{i}_q'/'lens{i}_phi').
+    # Setting an e1/e2 override while this is "q_phi" (or a q/phi override while "e1e2") logs one
+    # warning at construction -- that override is unused, not applied.
+    "lens_mass_parametrization": "e1e2",
+
     # ---- cfg["nautilus"]: Nautilus nested-sampler controls ----------------------------------------
     # NOT present in make_default_cfg()'s returned dict at all -- entirely optional and only read
     # when method is 'nautilus-source' or 'nautilus-image' (see simple_pipeline._finish_nautilus_run,

@@ -58,3 +58,6 @@ handoff.md
 
 # scratch analysis, not tracked
 q-phi-analysis/
+
+# captured run logs
+*.out

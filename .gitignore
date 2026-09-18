@@ -65,3 +65,6 @@ q-phi-analysis/
 # tutorial run products, regenerable
 tutorial/outputs/
 tutorial/outputs_nb/
+
+# graphify skill cache, machine-specific and regenerable
+graphify-out/

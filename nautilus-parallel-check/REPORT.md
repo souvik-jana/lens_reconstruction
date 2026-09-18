@@ -88,16 +88,20 @@ neither fix touches.
 |---|---|---|---|---|
 | B_jit | 1974.3 s | 154,700 | 36,678.8 | 939.7763 |
 | **D_jit_pool** | **723.8 s** | 154,800 | 37,593.2 | 939.7792 |
+| C_pool | **not run** | — | — | — |
 
-pool **2.73x**. C_pool had not finished when this was written, so the jit factor
-for this mode is not yet measured.
+pool **2.73x**. **C_pool was cancelled before finishing**, so the jit factor for
+EM+GW is not measured. Extrapolating from the per-call numbers it would be large
+(155.8 ms eager vs 4.19 ms jitted), but that is an estimate, not a measurement,
+and is deliberately left out of the summary table. Re-run
+`python run_emgw_full.py C_pool` to fill it in; expect roughly 1.5-2 h.
 
 ### Summary
 
 | mode | jit | pool(4) | combined |
 |---|---|---|---|
 | GW-only | 17.2x | 2.8x | **41x** |
-| EM+GW | not yet measured | 2.73x | — |
+| EM+GW | not measured (C_pool cancelled) | 2.73x | — |
 | EM-only | 1.01x | 1.69x | 1.7x |
 
 The gain lands where the likelihood is expensive. Where it is cheap, Amdahl's law

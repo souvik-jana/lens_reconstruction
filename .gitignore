@@ -61,3 +61,7 @@ q-phi-analysis/
 
 # captured run logs
 *.out
+
+# tutorial run products, regenerable
+tutorial/outputs/
+tutorial/outputs_nb/

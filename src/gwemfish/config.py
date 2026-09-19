@@ -4,23 +4,6 @@ Configuration constants and default kwargs for the GWEMFISH pipeline.
 
 import jax.numpy as jnp
 
-
-def e1e2_to_qphi(e1, e2):
-    """Convert ellipticity parameters e1, e2 to axis ratio q and position angle phi.
-    
-    Args:
-        e1: First ellipticity component
-        e2: Second ellipticity component
-    
-    Returns:
-        q: Axis ratio (b/a, where b is minor axis, a is major axis)
-        phi: Position angle in radians
-    """
-    e = jnp.sqrt(e1**2 + e2**2)
-    q = jnp.sqrt((1 - e) / (1 + e))
-    phi = 0.5 * jnp.arctan2(e2, e1)
-    return float(q), float(phi)
-
 # Physical constants
 arcsecond_to_radians = 4.84813681109536e-06
 Mpc_to_m = 3.085677581491367e+22

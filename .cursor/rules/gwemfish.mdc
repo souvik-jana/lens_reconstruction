@@ -39,3 +39,6 @@ alwaysApply: false
 ## Scripts
 
 No `main()` wrapper; module-level script body. Use `uv run python`. Copy patterns from `examples/scripts/` — do not hand-roll lens physics.
+
+See `issues/nautilus_slow_and_no_pool.md` and `issues/nautilus_emgw_source_centre.md`
+for known nautilus issues. `cfg["lens_mass_parametrization"]="q_phi"` is supported.

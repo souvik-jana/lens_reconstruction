@@ -13,6 +13,13 @@ import scipy.stats as sps
 
 from .lens_setup import build_lens_solver, solve_and_select
 from .data_sim import compute_gw_from_images
+from .ellipticity_reparam import (
+    expand_qphi_params,
+    mass_qphi_prefixes_from_entries,
+    swap_ellipticity_for_qphi,
+    validate_parametrization,
+    warn_if_ellipticity_prior_keys_unused,
+)
 from .priors import DEFAULT_PRIORS_GW_SOURCE_PLANE
 from .nautilus_common import (
     EM_EXTRA_DEFAULT_DISTS,
@@ -278,6 +285,8 @@ def build_gw_source_plane_problem(ctx, cfg):
         default_dists, registry_fixed = layout_defaults_from_registry(entries, registry)
         default_dists.update(_gw_extra_defaults(bounds, ("T_star", "dL", "y0gw", "y1gw")))
         n_mass = len(mass_model.func_list)
+        parametrization = validate_parametrization(cfg_full.get("lens_mass_parametrization", "e1e2"))
+        qphi_prefixes = mass_qphi_prefixes_from_entries(entries, parametrization)
 
         def make_kwargs_lens(full):
             kl, _, _ = unpack_to_kwargs(full, entries, n_mass=n_mass,
@@ -285,12 +294,20 @@ def build_gw_source_plane_problem(ctx, cfg):
             return kl
     else:
         registry_fixed = {}
-        default_dists = _GW_DEFAULT_DISTS
+        default_dists = dict(_GW_DEFAULT_DISTS)
+        parametrization = validate_parametrization(cfg_full.get("lens_mass_parametrization", "e1e2"))
+        qphi_prefixes = frozenset({"lens"}) if parametrization == "q_phi" else frozenset()
 
         def make_kwargs_lens(full):
             return _build_kwargs_lens(full)
 
+    if qphi_prefixes:
+        swap_ellipticity_for_qphi(default_dists, qphi_prefixes)
+
     cfg_priors = cfg_full.get("priors", {})
+    warn_if_ellipticity_prior_keys_unused(
+        cfg_priors, parametrization, qphi_prefixes or frozenset({"lens"})
+    )
     scipy_overrides, cfg_fixed = parse_cfg_priors(cfg_priors, default_dists, bounds)
     fixed_params = {**registry_fixed, **cfg_fixed}
     prior = build_nautilus_prior(default_dists, bounds, scipy_overrides, fixed_params)
@@ -300,6 +317,7 @@ def build_gw_source_plane_problem(ctx, cfg):
 
     def log_likelihood(params):
         full = {**fixed_params, **params}
+        full = expand_qphi_params(full, qphi_prefixes)
         kwargs_lens = make_kwargs_lens(full)
         x_pos, y_pos = solve_fn(float(full["y0gw"]), float(full["y1gw"]), kwargs_lens)
         if x_pos is None:
@@ -390,11 +408,21 @@ def build_em_gw_source_plane_problem(ctx, cfg):
         n_mass = len(lens_image.MassModel.func_list)
         n_source = len(lens_image.SourceModel.func_list)
         n_lens_light = len(lens_image.LensLightModel.func_list)
+        parametrization = validate_parametrization(cfg_full.get("lens_mass_parametrization", "e1e2"))
+        qphi_prefixes = mass_qphi_prefixes_from_entries(entries, parametrization)
     else:
         registry_fixed = {}
         default_dists = {**_GW_DEFAULT_DISTS, **EM_EXTRA_DEFAULT_DISTS}
+        parametrization = validate_parametrization(cfg_full.get("lens_mass_parametrization", "e1e2"))
+        qphi_prefixes = frozenset({"lens"}) if parametrization == "q_phi" else frozenset()
+
+    if qphi_prefixes:
+        swap_ellipticity_for_qphi(default_dists, qphi_prefixes)
 
     cfg_priors = cfg_full.get("priors", {})
+    warn_if_ellipticity_prior_keys_unused(
+        cfg_priors, parametrization, qphi_prefixes or frozenset({"lens"})
+    )
     scipy_overrides, cfg_fixed = parse_cfg_priors(cfg_priors, default_dists, bounds)
     fixed_params = {**registry_fixed, **cfg_fixed}
     prior = build_nautilus_prior(default_dists, bounds, scipy_overrides, fixed_params)
@@ -404,6 +432,7 @@ def build_em_gw_source_plane_problem(ctx, cfg):
 
     def log_likelihood(params):
         full = {**fixed_params, **params}
+        full = expand_qphi_params(full, qphi_prefixes)
 
         if use_layout:
             kwargs_lens, kwargs_source, kwargs_lens_light = unpack_to_kwargs(

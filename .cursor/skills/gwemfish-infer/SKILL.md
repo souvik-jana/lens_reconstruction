@@ -40,6 +40,10 @@ Multi-method comparison allowed (e.g. deriv-approx + nautilus-source + fisher in
 
 For GW modes, ask which Nautilus variant when unclear: **source-plane** (`y0gw`/`y1gw`) vs **image-plane** (`image_x*`/`image_y*`). EM-only: either name works; prefer `nautilus-source`.
 
+`cfg["lens_mass_parametrization"]="q_phi"` verified across fisher, deriv-approx,
+hmc-informed, nautilus-source, nautilus-image, all 3 modes. deriv-approx needs
+`informed=True` on EM-only or it diverges (r_hat ~1e15 measured).
+
 ### Cost — decides which methods are practical
 
 Per likelihood call, 4-image system, 40×40 grid. Every call solves the lens equation; jaxtronomy runs on the host behind `jax.pure_callback` (one round-trip per call).
@@ -162,6 +166,11 @@ Also: `prior_check` catches prior changes on resume, but **not** changes to `n_l
 
 `truths_nautilus` will not contain `y0gw`/`y1gw` (they are never in `truth_params`), so merge the source position in explicitly when plotting truths.
 
+**4. EM+GW `nautilus-source` ties the GW source to the EM source centre** -- gradient
+methods sample `y0gw`/`y1gw` independently (23 vs 25 free params in a live run).
+`cfg["priors"]["y0gw"]` given to nautilus in this mode is silently dropped (never
+added to `default_dists`). See issues/nautilus_emgw_source_centre.md.
+
 
 1. **Precursor** — for `nautilus-image`, use `deriv-approx` (default, `informed: True`) or `fisher`, same as always. For `nautilus-source`, four precursors are valid — ask which:
    - **`fisher-source` / `deriv-approx-source`** (recommended default when targeting `nautilus-source`) — direct. `H0`/`keys_to_include`/`u0` are already in `y0gw`/`y1gw` + shared-parameter form, matching `nautilus-source`'s sampling space exactly. `fisher-source` is the cheap no-NUTS option; `deriv-approx-source` gives a real posterior if you want it.
@@ -188,12 +197,11 @@ NAUTILUS_SIGMA_SPAN = 2.0  # 5.0 for em_nautilus.py
 print("\n--- Nautilus priors from Fisher H0 (deriv-approx) ---\n")
 keys = ctx["likelihood"]["keys_to_include"]
 u0 = np.asarray(ctx["likelihood"]["u0"])
+from gwemfish.fisher import invert_fisher_matrix
+
 H0 = np.asarray(ctx["fisher"]["H0"])
-FM = -H0
-try:
-    cov = np.linalg.inv(FM)
-except np.linalg.LinAlgError:
-    cov = np.linalg.pinv(FM)
+regularize = bool((ctx.get("cfg") or {}).get("inference", {}).get("regularize", False))
+cov = np.asarray(invert_fisher_matrix(-H0, regularize=regularize))
 sigmas = np.sqrt(np.diag(cov))
 
 for i, key in enumerate(keys):
@@ -373,7 +381,7 @@ run_inference(ctx, mode="GW-only", method="nautilus-source",
 
 `n_newton` (default 8) is a **step count, not a switch**, and `0` raises — zero steps means every derivative comes back exactly `0.0` with no error and a NaN covariance. The only on/off switch is `cfg["nautilus"]["polish"]`, and only `nautilus-source` reads it.
 
-**Diagnostics — `cfg["inference"]["diagnostics"]`:** `"warn"` (default, prints and continues), `"raise"` (aborts before sampling), `"off"`. Six checks at truth:
+**Diagnostics — `cfg["inference"]["diagnostics"]`:** `"warn"` (default, prints and continues), `"raise"` (aborts before sampling), `"off"`. Seven checks at truth:
 
 | # | check | fails when |
 |---|---|---|
@@ -383,6 +391,7 @@ run_inference(ctx, mode="GW-only", method="nautilus-source",
 | 4 | parameters | more free parameters than GW observables — **GW-only only**; `EM+GW` / `EM-only` print the tally marked `NA` |
 | 5 | fisher cond | `cond > 1e10`, or a Hessian eigenvalue positive above the noise floor (truth is a saddle) |
 | 6 | gradient | truth is not the likelihood peak (`\|g0/√\|H_ii\|\| > 0.5`) |
+| 7 | inversion | Jacobi invert residual: `max\|FsCs-I\| >= 1e-6` or physical `max\|FC-I\| >= 0.5` |
 
 Thresholds are per-key overridable via `cfg["inference"]["diagnostics_thresholds"]`; give only what you change. Prefer raising one threshold over `diagnostics: "off"`, which disables the checks still working.
 

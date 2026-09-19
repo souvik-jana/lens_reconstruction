@@ -55,3 +55,16 @@ handoff.md
 !comparison-analysis/report/
 !comparison-analysis/report/**/
 !comparison-analysis/report/**/*.pdf
+
+# scratch analysis, not tracked
+q-phi-analysis/
+
+# captured run logs
+*.out
+
+# tutorial run products, regenerable
+tutorial/outputs/
+tutorial/outputs_nb/
+
+# graphify skill cache, machine-specific and regenerable
+graphify-out/

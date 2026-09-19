@@ -9,6 +9,12 @@ import warnings
 import jax
 import scipy.stats as sps
 
+from .ellipticity_reparam import (
+    mass_qphi_prefixes_from_entries,
+    qphi_derived_keys,
+    swap_ellipticity_for_qphi,
+    validate_parametrization,
+)
 from .nautilus_common import (
     build_em_only_nautilus_problem,
     build_nautilus_prior,
@@ -58,7 +64,16 @@ def build_scipy_priors_for_probmodel(probmodel, built, cfg_full):
     prior_sample = probmodel.get_sample(
         prng_key=jax.random.PRNGKey(int(cfg_full["inference"]["prior_sample_rng_key"]))
     )
-    keys_all = list(prior_sample.keys())
+    # get_sample() (herculens NumpyroModel) filters only on is_observed, so in q_phi
+    # mode it also returns the numpyro.deterministic lens_e1/lens_e2 sites -- exclude
+    # those or nautilus would sample them as if independent of lens_q/lens_phi.
+    parametrization = validate_parametrization(cfg_full.get("lens_mass_parametrization", "e1e2"))
+    if built.get("entries") is not None:
+        qphi_prefixes = mass_qphi_prefixes_from_entries(built["entries"], parametrization)
+    else:
+        qphi_prefixes = frozenset({"lens"}) if parametrization == "q_phi" else frozenset()
+    derived_keys = qphi_derived_keys(qphi_prefixes)
+    keys_all = [k for k in prior_sample.keys() if k not in derived_keys]
     keys_to_sample = [k for k in keys_all if k not in fixed_literal_keys]
 
     default_dists = {}
@@ -74,6 +89,16 @@ def build_scipy_priors_for_probmodel(probmodel, built, cfg_full):
         )
         default_dists.update(reg_dists)
         registry_fixed.update(reg_fixed)
+
+    # Excluding the derived keys from keys_to_sample is not enough: the nautilus
+    # prior is built from default_dists, not from keys_to_sample, and the layout
+    # registry above put '{prefix}_e1'/'{prefix}_e2' straight into it. Without
+    # this swap nautilus samples e1/e2 *and* q as independent parameters -- the
+    # lens model then reads the sampled e1/e2 and ignores q entirely, so q comes
+    # back as its prior. Same call the other three nautilus builders make
+    # (nautilus_common.py, nautilus_source_inference.py x2).
+    if qphi_prefixes:
+        swap_ellipticity_for_qphi(default_dists, qphi_prefixes)
 
     n_images = built["n_images"]
     truth_params = built["truth_params"]

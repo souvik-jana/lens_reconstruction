@@ -446,8 +446,9 @@ COMPLETE_CFG = {
         #   5 fisher cond  scaled Fisher condition number + eigenvalue range; judged in every
         #                  mode, and the real arbiter of whether the widths mean anything
         #   6 gradient     g0/sqrt|diag H0| ~ 0, i.e. truth really is at the peak
+        #   7 inversion    max|FsCs-I| (1e-6) and physical max|FC-I| (0.5); judged in every mode
         # Checks 1-3 need a solver, so they are skipped for image-plane methods and EM-only;
-        # checks 4-6 need a Fisher expansion, so they are skipped for the nautilus methods.
+        # checks 4-7 need a Fisher expansion, so they are skipped for the nautilus methods.
         # Per-check thresholds. Override any subset; omitted keys keep the default.
         # Defaults live in gwemfish.diagnostics.DEFAULT_THRESHOLDS and were calibrated
         # on real systems rather than chosen: e.g. condition_limit 1e10 sits between a
@@ -460,16 +461,18 @@ COMPLETE_CFG = {
             # "observable_rtol": 1e-3,  # check 2: time delays / dL_eff
             # "condition_limit": 1e10,  # check 5: scaled Fisher condition number
             # "gradient_sigma": 0.5,    # check 6: |g0|/sqrt|diag H0|
+            # "inversion_residual": 1e-6,  # check 7: max|FsCs-I| after Jacobi invert
+            # "inversion_residual_physical": 0.5,  # check 7: physical max|FC-I|
         },
         "diagnostics": "warn",  # "warn" (default) | "raise" | "off".
                                 # "off" is unsafe for the '-source' family: their expansion is
                                 # built AT truth, so a bad solve there corrupts everything
                                 # downstream with nothing to signal it.
-        # bool. method='hmc-informed'/'hmc-informed-source' only (passed to run_mcmc_informed).
+        # bool. Gates scaled-space eigenvalue clip in invert_fisher_matrix for every
+        # path that inverts -H0: fisher / fisher-source, informed NUTS, and
+        # nautilus_priors_from_fisher_h0. Default False (Jacobi + inv, no clip).
         # NOT present in make_default_cfg()'s returned dict -- read via
-        # cfg["inference"].get("regularize", False). If True, eigendecomposes the Fisher mass
-        # matrix and clips/regularizes small or negative eigenvalues before use (see
-        # gwemfish.inference.run_mcmc_informed docstring) -- helps when H0 is near-singular.
+        # cfg["inference"].get("regularize", False).
         "regularize": False,
     },
 
@@ -593,6 +596,51 @@ COMPLETE_CFG = {
     # EM-only + method='nautilus-source'/'nautilus-image' (build_em_only_nautilus_problem raises
     # ValueError without it). Everywhere else, False remains a fully supported, non-breaking default.
     "use_parameter_layout": False,
+
+    # ---- cfg["lens_mass_parametrization"]: e1/e2 vs q/phi -------------------------------------------
+    # "e1e2" (default) or "q_phi". Optional reparametrization of the main lens galaxy's mass
+    # ellipticity: instead of sampling e1/e2 directly, samples q (axis ratio, Uniform(0.01, 1.0))
+    # and phi (position angle in radians, Uniform(-pi/2, pi/2)), then derives e1/e2 via
+    # herculens.Util.param_util.phi_q2_ellipticity (matches lenstronomy's convention exactly --
+    # see ellipticity_reparam.py). Both use_parameter_layout=False (flat "lens_e1"/"lens_q"/
+    # "lens_phi") and True ("lens{i}_e1"/"lens{i}_q"/"lens{i}_phi" for the mass component using
+    # e1/e2 -- PIEMD/DPIE already sample q/phi natively and are unaffected). Override the q/phi
+    # priors the same way as any other parameter, via cfg['priors']['lens_q']/['lens_phi'] (or
+    # 'lens{i}_q'/'lens{i}_phi'). Setting an e1/e2 override while this is "q_phi" (or a q/phi
+    # override while "e1e2") logs one warning at construction -- that override is unused.
+    #
+    # VERIFIED (examples/scripts/qphi_coverage_matrix.py, 4-image system): fisher, fisher-source,
+    # deriv-approx(-source), hmc-informed(-source), nautilus-source and nautilus-image, across
+    # GW-only / EM-only / EM+GW. Not covered: plain hmc and hmc-source (only the informed
+    # variants were run), and use_parameter_layout=False (one script only).
+    #
+    # WHETHER e1/e2 APPEAR IN THE OUTPUT DEPENDS ON THE METHOD AND ON WHETHER phi IS FREE.
+    # They are numpyro.deterministic sites, so hmc/hmc-informed always return them. fisher,
+    # deriv-approx and nautilus return only free parameters, and get e1/e2 only via
+    # add_qphi_columns_to_samples, which backfills ONLY when both q and phi were sampled
+    # (ellipticity_reparam.py:167). So with phi fixed to a literal, a fisher/deriv-approx/nautilus
+    # posterior has NO lens_e1/lens_e2 columns at all -- anything downstream that expects them
+    # (corner plots, to_source_plane_samples) must derive them from q and the fixed phi itself.
+    #
+    # q/phi and e1e2 are DIFFERENT PRIORS -- Uniform x Uniform versus TruncatedNormal(0, 0.3,
+    # -1, 1) per component -- not a reparametrization of one prior into the other, so the two
+    # modes are not expected to give identical posteriors. Measured on a well-constrained EM-only
+    # system they agree to 0.04 sigma in q and 0.03 sigma in phi, because there the likelihood
+    # dominates both priors; expect a visible gap where the data is weak.
+    #
+    # Two known limitations, both benign on well-constrained systems but worth knowing:
+    #   * fisher/fisher-source draw an UNBOUNDED Gaussian N(u0, cov) that does not consult the
+    #     prior, so with q within a few sigma of 1.0 (a round lens) some draws land at q > 1.
+    #     Those are not garbage -- (q, phi) and (1/q, phi+pi/2) give identical e1/e2, so they fold
+    #     onto the 90-degree-rotated ellipse -- but q > 1 is not a valid axis ratio and the e1
+    #     marginal becomes bimodal with opposite-sign modes. Every other method enforces the bound
+    #     (numpyro's interval bijector for NUTS, the unit-cube map for nautilus). Measured 17 sigma
+    #     clear of the bound on the tutorial systems.
+    #   * phi is pi-periodic (cos(2*phi)) but its prior is a hard Uniform(-pi/2, pi/2) box with
+    #     walls rather than a wrap. A lens oriented near +-pi/2, or a near-circular lens where phi
+    #     is barely constrained, will show posterior mass split across both edges with nothing
+    #     reconnecting them. Measured 44 sigma clear on the tutorial systems.
+    "lens_mass_parametrization": "e1e2",
 
     # ---- cfg["nautilus"]: Nautilus nested-sampler controls ----------------------------------------
     # NOT present in make_default_cfg()'s returned dict at all -- entirely optional and only read
@@ -786,14 +834,13 @@ def nautilus_priors_from_fisher_h0(ctx, span=2.0):
     cfg["priors"]["y0gw"/"y1gw"] by hand for that method; this function will
     simply skip keys not present in keys_to_include.
     """
+    from .fisher import invert_fisher_matrix
+
     keys = ctx["likelihood"]["keys_to_include"]
     u0 = np.asarray(ctx["likelihood"]["u0"])
     h0 = np.asarray(ctx["fisher"]["H0"])
-    fisher_matrix = -h0
-    try:
-        cov = np.linalg.inv(fisher_matrix)
-    except np.linalg.LinAlgError:
-        cov = np.linalg.pinv(fisher_matrix)
+    regularize = bool((ctx.get("cfg") or {}).get("inference", {}).get("regularize", False))
+    cov = np.asarray(invert_fisher_matrix(-h0, regularize=regularize))
     sigmas = np.sqrt(np.diag(cov))
 
     priors = ctx["cfg"].setdefault("priors", {})

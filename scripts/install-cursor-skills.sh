@@ -5,6 +5,7 @@ repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 skills=(
   gwemfish-simulate
   gwemfish-infer
+  gwemfish-cfg
   gwemfish-plot
   gwemfish-batch
   gwemfish-pal

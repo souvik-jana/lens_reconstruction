@@ -5,10 +5,54 @@ This module provides functions to compute Fisher matrix approximations
 and create approximate log-probability functions for faster inference.
 """
 
+import warnings
+
 import jax
 import jax.numpy as jnp
+import numpy as np
 import numpyro
 from numpyro.handlers import seed
+
+
+def invert_fisher_matrix(FM, regularize=False):
+    """Jacobi-scale FM, invert, unwhiten. Clip in scaled space only if regularize."""
+    FM_np = np.asarray(FM, dtype=float)
+    diag = np.abs(np.diag(FM_np))
+    scale = np.where(diag > 0, 1.0 / np.sqrt(np.where(diag > 0, diag, 1.0)), 1.0)
+
+    FM_scaled = FM_np * scale[:, None] * scale[None, :]
+    try:
+        cov_scaled = np.linalg.inv(FM_scaled)
+    except np.linalg.LinAlgError:
+        warnings.warn(
+            "Scaled Fisher matrix is singular or near-singular; Jacobi invert failed. "
+            "Do not use a pseudoinverse as a posterior covariance (it assigns zero "
+            "variance to unconstrained directions). Freeze a parameter via "
+            "cfg['priors'] or set cfg['inference']['regularize']=True to clip in "
+            "whitened space.",
+            UserWarning,
+            stacklevel=2,
+        )
+        raise
+
+    if regularize:
+        eig = np.linalg.eigvalsh(cov_scaled)
+        if eig.min() <= 0:
+            n = cov_scaled.shape[0]
+            floor = max(n * np.finfo(float).eps * 10.0, 1e-14)
+            warnings.warn(
+                f"Scaled Fisher covariance is not positive definite (min eigenvalue "
+                f"{eig.min():.3e}); clipping eigenvalues below {floor:.3e} in "
+                "whitened space because cfg['inference']['regularize'] is True.",
+                UserWarning,
+                stacklevel=2,
+            )
+            vals, vecs = np.linalg.eigh(cov_scaled)
+            cov_scaled = (vecs * np.maximum(vals, floor)) @ vecs.T
+            cov_scaled = 0.5 * (cov_scaled + cov_scaled.T)
+
+    cov = cov_scaled * scale[:, None] * scale[None, :]
+    return jnp.asarray(0.5 * (cov + cov.T))
 
 
 # def compute_fisher(model, input_params, keys_to_include, u0, rng_key=None):

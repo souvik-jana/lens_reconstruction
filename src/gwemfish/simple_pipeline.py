@@ -27,6 +27,14 @@ import warnings
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from numpyro.handlers import trace, substitute, seed
 
+from .ellipticity_reparam import (
+    add_qphi_columns_to_samples,
+    add_qphi_truth,
+    mass_qphi_prefixes_from_entries,
+    qphi_derived_keys,
+    validate_parametrization,
+)
+
 
 def _deep_merge_dict(base: Dict[str, Any], override: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     """Recursively deep-merge dictionaries (override wins)."""
@@ -227,54 +235,11 @@ def _save_pipeline_json(
         json.dump(_to_serializable(payload), f, indent=2)
 
 
-def _fisher_covariance(FM, keys=None):
-    """Invert the Fisher matrix in a whitened basis, then check it is usable.
+def _fisher_covariance(FM, keys=None, regularize=False):
+    """Invert the Fisher matrix via Jacobi whitening (see invert_fisher_matrix)."""
+    from .fisher import invert_fisher_matrix
 
-    ``u0`` is in raw physical units, so the parameters span many orders of magnitude
-    (dL ~ 3e4 Mpc, T_star ~ 3e7 s, e2 ~ 0.6). A direct ``inv`` on that matrix can have
-    a condition number around 1e20 -- past what float64 can invert -- and returns a
-    covariance with small *negative* eigenvalues, which makes
-    ``multivariate_normal`` produce NaN samples with no error raised.
-
-    Rescaling each row/column by 1/sqrt(|FM_ii|) removes the unit disparity, which is
-    almost all of the ill-conditioning: on catalog system 555 it takes the condition
-    number from 8e19 to 8e12, comfortably invertible. The scaling cancels exactly, so
-    this is the same covariance, just computed without the round-off.
-    """
-    import numpy as _np
-    import jax.numpy as jnp
-
-    FM_np = _np.asarray(FM, dtype=float)
-    diag = _np.abs(_np.diag(FM_np))
-    scale = _np.where(diag > 0, 1.0 / _np.sqrt(_np.where(diag > 0, diag, 1.0)), 1.0)
-
-    FM_scaled = FM_np * scale[:, None] * scale[None, :]
-    try:
-        cov_scaled = _np.linalg.inv(FM_scaled)
-    except _np.linalg.LinAlgError:
-        cov_scaled = _np.linalg.pinv(FM_scaled)
-    cov = cov_scaled * scale[:, None] * scale[None, :]
-    cov = 0.5 * (cov + cov.T)
-
-    eig = _np.linalg.eigvalsh(cov)
-    if eig.min() <= 0:
-        worst = keys[int(_np.argmin(_np.abs(_np.linalg.eigvalsh(FM_np))))] if keys else "?"
-        warnings.warn(
-            f"Fisher covariance is not positive definite (min eigenvalue "
-            f"{eig.min():.3e}); the Fisher matrix is singular to working precision "
-            f"along a near-degenerate direction (weakest parameter: {worst}). This "
-            "usually means the observation does not constrain every free parameter -- "
-            "e.g. a 3-image system gives 2 time delays + 3 dL_eff = 5 observables, so "
-            "5 free parameters leave nothing over. Fix one parameter via cfg['priors'] "
-            "or add EM data. Clipping the non-positive eigenvalues so sampling can "
-            "proceed, but treat the widths along those directions as unbounded.",
-            UserWarning, stacklevel=2,
-        )
-        vals, vecs = _np.linalg.eigh(cov)
-        floor = max(eig.max(), 1.0) * 1e-12
-        cov = (vecs * _np.maximum(vals, floor)) @ vecs.T
-        cov = 0.5 * (cov + cov.T)
-    return jnp.asarray(cov)
+    return invert_fisher_matrix(FM, regularize=regularize)
 
 
 def make_default_cfg() -> Dict[str, Any]:
@@ -392,7 +357,8 @@ def make_default_cfg() -> Dict[str, Any]:
             # Per-check thresholds; anything omitted keeps gwemfish's default.
             # See gwemfish.diagnostics.DEFAULT_THRESHOLDS for the values and how they
             # were calibrated. Keys: position_tol (arcsec), observable_rtol,
-            # condition_limit, gradient_sigma.
+            # condition_limit, gradient_sigma, inversion_residual,
+            # inversion_residual_physical.
             "diagnostics_thresholds": {},
         },
         "plot": {
@@ -440,6 +406,11 @@ def make_default_cfg() -> Dict[str, Any]:
         },
         # Use ``lens0_*``, ``source0_*``, ``light0_*`` names and ``profile_prior_rules`` defaults.
         "use_parameter_layout": False,
+        # "e1e2" (default) or "q_phi" -- optional reparametrization of lens mass
+        # ellipticity, applied uniformly across every mode and method (hmc, nautilus,
+        # nautilus-source, fisher, deriv-approx, and their -source variants). See
+        # ellipticity_reparam.py.
+        "lens_mass_parametrization": "e1e2",
     }
 
 
@@ -1057,6 +1028,8 @@ def setup_em_observation(cfg: Optional[Dict[str, Any]] = None) -> Dict[str, Any]
         if use_mst:
             truth_params["k_mst"] = float(k_mst)
 
+    add_qphi_truth(truth_params)
+
     return {
         "cfg": cfg_full,
         "kwargs_lens": kwargs_lens,
@@ -1215,6 +1188,8 @@ def setup_gw_observation(ctx: Dict[str, Any], cfg: Optional[Dict[str, Any]] = No
                     kwargs_lens_light=[],
                 )
             )
+
+    add_qphi_truth(truth_params)
 
     ctx = dict(ctx)
     ctx.update(
@@ -1388,6 +1363,7 @@ def _build_inference_probmodel(ctx, mode, cfg_full):
 
     from .prob_model import ProbModel, ProbModel_GW_only, ProbModel_EM_only
 
+    parametrization = validate_parametrization(cfg_full.get("lens_mass_parametrization", "e1e2"))
     priors_user = cfg_full.get("priors", {})
     priors_user_norm = _normalize_priors_overrides(
         priors_user, jnp=jnp, numpyro=numpyro, dist=dist,
@@ -1456,10 +1432,12 @@ def _build_inference_probmodel(ctx, mode, cfg_full):
                 kwargs_source=kwargs_source,
                 kwargs_lens_light=kwargs_lens_light,
             )
+            qphi_components = mass_qphi_prefixes_from_entries(entries, parametrization)
             registry = build_priors_registry(
                 entries,
                 lens_image=ctx["lens_image"],
                 user_priors=priors_user_norm,
+                qphi_mass_components=qphi_components,
             )
             priors_flex = _merge_flex_priors_with_gw_image_pos(
                 registry, priors_internal, priors_image_pos, priors_user_norm
@@ -1484,15 +1462,18 @@ def _build_inference_probmodel(ctx, mode, cfg_full):
                 image_position_priors=image_position_priors_override,
                 gw_error_scales=(gw_error_scales if user_set_gw_error_scales else None),
                 use_mst=use_mst,
+                qphi_mass_components=qphi_components,
             )
         elif mode == "GW-only":
             entries = build_mass_parameter_entries(
                 ctx["lens_mass_model"], kwargs_lens=ctx["kwargs_lens"]
             )
+            qphi_components = mass_qphi_prefixes_from_entries(entries, parametrization)
             registry = build_priors_registry(
                 entries,
                 mass_model=ctx["lens_mass_model"],
                 user_priors=priors_user_norm,
+                qphi_mass_components=qphi_components,
             )
             priors_flex = _merge_flex_priors_with_gw_image_pos(
                 registry, priors_internal, priors_image_pos, priors_user_norm
@@ -1505,6 +1486,7 @@ def _build_inference_probmodel(ctx, mode, cfg_full):
                 lens_gw=ctx["lens_gw"],
                 gw_error_scales=(gw_error_scales if user_set_gw_error_scales else None),
                 use_mst=use_mst,
+                qphi_mass_components=qphi_components,
             )
         else:
             em_local = cfg_full.get("em") or {}
@@ -1516,10 +1498,12 @@ def _build_inference_probmodel(ctx, mode, cfg_full):
                 kwargs_source=kwargs_source,
                 kwargs_lens_light=kwargs_lens_light,
             )
+            qphi_components = mass_qphi_prefixes_from_entries(entries, parametrization)
             registry = build_priors_registry(
                 entries,
                 lens_image=ctx["lens_image"],
                 user_priors=priors_user_norm,
+                qphi_mass_components=qphi_components,
             )
             priors_flex = {**registry, **priors_internal, **priors_user_norm}
             probmodel = FlexProbModelEMOnly(
@@ -1529,6 +1513,7 @@ def _build_inference_probmodel(ctx, mode, cfg_full):
                 lens_image=ctx["lens_image"],
                 noise=ctx["noise_inf"],
                 use_mst=use_mst,
+                qphi_mass_components=qphi_components,
             )
     elif mode == "EM+GW":
         x_true = [truth_params[f"image_x{i+1}"] for i in range(n_images)]
@@ -1550,6 +1535,7 @@ def _build_inference_probmodel(ctx, mode, cfg_full):
             image_position_priors=image_position_priors_override,
             gw_error_scales=(gw_error_scales if user_set_gw_error_scales else None),
             use_mst=use_mst,
+            lens_parametrization=parametrization,
         )
     elif mode == "GW-only":
         probmodel = ProbModel_GW_only(
@@ -1559,6 +1545,7 @@ def _build_inference_probmodel(ctx, mode, cfg_full):
             priors=priors_combined,
             gw_error_scales=(gw_error_scales if user_set_gw_error_scales else None),
             use_mst=use_mst,
+            lens_parametrization=parametrization,
         )
     else:
         probmodel = ProbModel_EM_only(
@@ -1566,6 +1553,7 @@ def _build_inference_probmodel(ctx, mode, cfg_full):
             lens_image=ctx["lens_image"],
             noise=ctx["noise_inf"],
             priors=priors_combined,
+            lens_parametrization=parametrization,
         )
 
     return {
@@ -1600,6 +1588,7 @@ def _build_inference_probmodel_source_plane(ctx, mode, cfg_full):
     from .prob_model import ProbModelSourcePlane, ProbModelSourcePlane_GW_only
     from .lens_setup import build_lens_solver
 
+    parametrization = validate_parametrization(cfg_full.get("lens_mass_parametrization", "e1e2"))
     priors_user = cfg_full.get("priors", {})
     priors_user_norm = _normalize_priors_overrides(
         priors_user, jnp=jnp, numpyro=numpyro, dist=dist,
@@ -1676,8 +1665,10 @@ def _build_inference_probmodel_source_plane(ctx, mode, cfg_full):
             entries = build_mass_parameter_entries(
                 ctx["lens_mass_model"], kwargs_lens=ctx["kwargs_lens"]
             )
+            qphi_components = mass_qphi_prefixes_from_entries(entries, parametrization)
             registry = build_priors_registry(
                 entries, mass_model=ctx["lens_mass_model"], user_priors=priors_user_norm,
+                qphi_mass_components=qphi_components,
             )
             priors_flex = {**registry, **priors_combined}
             probmodel = FlexProbModelSourcePlaneGWOnly(
@@ -1690,6 +1681,7 @@ def _build_inference_probmodel_source_plane(ctx, mode, cfg_full):
                 solver_params=solver_params,
                 gw_error_scales=(gw_error_scales if user_set_gw_error_scales else None),
                 use_mst=use_mst,
+                qphi_mass_components=qphi_components,
             )
         else:  # mode == "EM+GW"
             from .config import DEFAULT_KWARGS_LENS_LIGHT, DEFAULT_KWARGS_SOURCE
@@ -1703,8 +1695,10 @@ def _build_inference_probmodel_source_plane(ctx, mode, cfg_full):
                 kwargs_source=kwargs_source,
                 kwargs_lens_light=kwargs_lens_light,
             )
+            qphi_components = mass_qphi_prefixes_from_entries(entries, parametrization)
             registry = build_priors_registry(
                 entries, lens_image=ctx["lens_image"], user_priors=priors_user_norm,
+                qphi_mass_components=qphi_components,
             )
             priors_flex = {**registry, **priors_combined}
             probmodel = FlexProbModelSourcePlaneEMGW(
@@ -1720,6 +1714,7 @@ def _build_inference_probmodel_source_plane(ctx, mode, cfg_full):
                 solver_params=solver_params,
                 gw_error_scales=(gw_error_scales if user_set_gw_error_scales else None),
                 use_mst=use_mst,
+                qphi_mass_components=qphi_components,
             )
     elif mode == "GW-only":
         probmodel = ProbModelSourcePlane_GW_only(
@@ -1731,6 +1726,7 @@ def _build_inference_probmodel_source_plane(ctx, mode, cfg_full):
             priors=priors_combined,
             gw_error_scales=(gw_error_scales if user_set_gw_error_scales else None),
             use_mst=use_mst,
+            lens_parametrization=parametrization,
         )
     else:  # mode == "EM+GW"
         probmodel = ProbModelSourcePlane(
@@ -1745,6 +1741,7 @@ def _build_inference_probmodel_source_plane(ctx, mode, cfg_full):
             priors=priors_combined,
             gw_error_scales=(gw_error_scales if user_set_gw_error_scales else None),
             use_mst=use_mst,
+            lens_parametrization=parametrization,
         )
 
     return {
@@ -1802,9 +1799,10 @@ def _finish_nautilus_run(ctx, cfg_full, prior, loglike, param_names, method_tag)
     nautilus_top = {k: v for k, v in n_cfg.items()
                     if k not in _skip and k not in run_kwarg_keys}
     samples = run_nautilus(prior, loglike, run_kwargs=run_kwargs, **nautilus_top)
+    add_qphi_columns_to_samples(samples)
 
     truth_params = ctx.get("truth_params", {}) or {}
-    truths_dict = {k: float(truth_params[k]) for k in param_names if k in truth_params}
+    truths_dict = {k: float(truth_params[k]) for k in samples if k in truth_params}
 
     out_cfg = cfg_full.get("output", {})
     out_dir = out_cfg.get("output_dir")
@@ -1942,7 +1940,18 @@ def run_inference(
     # not differentiate w.r.t. them (matches EM+GW behavior where user priors override image boxes).
     fixed_literal_keys = _fixed_literal_prior_keys(priors_user)
     prior_sample = probmodel.get_sample(prng_key=jax.random.PRNGKey(int(cfg_full["inference"]["prior_sample_rng_key"])))
-    keys_all = list(prior_sample.keys())
+    # get_sample() (herculens NumpyroModel) filters only on is_observed, so it
+    # includes numpyro.deterministic sites like lens_e1/lens_e2 in q_phi mode --
+    # exclude those here or Fisher/deriv-approx would try to differentiate w.r.t.
+    # them as if independent of lens_q/lens_phi. See qphi_derived_keys docstring.
+    parametrization = validate_parametrization(cfg_full.get("lens_mass_parametrization", "e1e2"))
+    entries_for_qphi = built.get("entries")
+    if entries_for_qphi is not None:
+        qphi_prefixes_run = mass_qphi_prefixes_from_entries(entries_for_qphi, parametrization)
+    else:
+        qphi_prefixes_run = frozenset({"lens"}) if parametrization == "q_phi" else frozenset()
+    derived_keys = qphi_derived_keys(qphi_prefixes_run)
+    keys_all = [k for k in prior_sample.keys() if k not in derived_keys]
     keys_to_include = [k for k in keys_all if k not in fixed_literal_keys]
 
     input_params: Dict[str, Any] = {}
@@ -2051,13 +2060,6 @@ def run_inference(
 
     u0 = jnp.asarray([input_params[k] for k in keys_to_include], dtype=jnp.float64)
     ctx["likelihood"]["u0"] = u0
-    # --- DEBUG ---
-    print("use_mst in probmodel:", probmodel.use_mst)
-    print("k_mst in keys_to_include:", "k_mst" in keys_to_include)
-    print("k_mst truth:", ctx["truth_params"].get("k_mst"))
-    print("keys_to_include:", keys_to_include)
-    print("input_params:", {k: input_params[k] for k in keys_to_include})
-# --- END DEBUG ---
     approx_logp, logp0, g0, H0, F0, Q0 = compute_fisher(
         model=probmodel.model,
         input_params=input_params,
@@ -2117,12 +2119,17 @@ def run_inference(
 
     if method_norm in ("fisher", "fisher-source"):
         FM = -H0
-        cov = _fisher_covariance(FM, keys_to_include)
+        cov = _fisher_covariance(
+            FM, keys_to_include,
+            regularize=bool(cfg_full["inference"].get("regularize", False)),
+        )
 
         key = jax.random.PRNGKey(int(setup_seed))
         n_fisher_samples = int(cfg_full["inference"]["n_fisher_samples"])
         samples_cov_array = jax.random.multivariate_normal(key, u0, cov, shape=(n_fisher_samples,))
         samples = {keys_to_include[i]: samples_cov_array[:, i] for i in range(len(keys_to_include))}
+        add_qphi_columns_to_samples(samples)
+        truths_dict = {k: float(truth_params[k]) for k in samples if k in truth_params}
         out_cfg = cfg_full.get("output", {})
         out_dir = out_cfg.get("output_dir")
         save_samples_path = _resolve_output_path(out_cfg.get("save_samples_path"), out_dir)
@@ -2214,6 +2221,13 @@ def run_inference(
             rng_key=jax.random.PRNGKey(int(setup_seed)),
         )
     _ = (summary, extra_fields, mcmc)
+    # deriv-approx's ProbModelFisher* only samples keys_to_include (now correctly
+    # just lens_q/lens_phi, not the derived lens_e1/lens_e2) -- unlike hmc, where
+    # lens_e1/lens_e2 are numpyro.deterministic sites on the full model and already
+    # land in `samples` automatically. Backfill them here so both methods return a
+    # samples dict with the same keys regardless of parametrization.
+    add_qphi_columns_to_samples(samples)
+    truths_dict = {k: float(truth_params[k]) for k in samples if k in truth_params}
     out_cfg = cfg_full.get("output", {})
     out_dir = out_cfg.get("output_dir")
     save_samples_path = _resolve_output_path(out_cfg.get("save_samples_path"), out_dir)

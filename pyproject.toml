@@ -37,6 +37,8 @@ dependencies = [
     "nautilus-sampler",
     "autofit>=2026.6.30.644",
     "autolens>=2026.6.30.644",
+    "pocomc>=1.2.6",
+    "nessai>=0.15.2",
 ]
 
 [build-system]

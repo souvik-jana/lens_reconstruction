@@ -40,6 +40,10 @@ Multi-method comparison allowed (e.g. deriv-approx + nautilus-source + fisher in
 
 For GW modes, ask which Nautilus variant when unclear: **source-plane** (`y0gw`/`y1gw`) vs **image-plane** (`image_x*`/`image_y*`). EM-only: either name works; prefer `nautilus-source`.
 
+`cfg["lens_mass_parametrization"]="q_phi"` verified across fisher, deriv-approx,
+hmc-informed, nautilus-source, nautilus-image, all 3 modes. deriv-approx needs
+`informed=True` on EM-only or it diverges (r_hat ~1e15 measured).
+
 ### Cost — decides which methods are practical
 
 Per likelihood call, 4-image system, 40×40 grid. Every call solves the lens equation; jaxtronomy runs on the host behind `jax.pure_callback` (one round-trip per call).
@@ -161,6 +165,11 @@ ctx["cfg"]["gw"]["source_plane_bounds"] = {
 Also: `prior_check` catches prior changes on resume, but **not** changes to `n_live`, `sigma_td`, `epsilon`, or the solver — those silently resume the old problem. Delete the `.hdf5` after any of them.
 
 `truths_nautilus` will not contain `y0gw`/`y1gw` (they are never in `truth_params`), so merge the source position in explicitly when plotting truths.
+
+**4. EM+GW `nautilus-source` ties the GW source to the EM source centre** -- gradient
+methods sample `y0gw`/`y1gw` independently (23 vs 25 free params in a live run).
+`cfg["priors"]["y0gw"]` given to nautilus in this mode is silently dropped (never
+added to `default_dists`). See issues/nautilus_emgw_source_centre.md.
 
 
 1. **Precursor** — for `nautilus-image`, use `deriv-approx` (default, `informed: True`) or `fisher`, same as always. For `nautilus-source`, four precursors are valid — ask which:

@@ -68,3 +68,6 @@ Resuming a checkpoint requires the **exact priors it was saved under** — nauti
 - Use `simple_pipeline` public API — no hand-rolled Herculens forward models
 - Run with `uv run python` from repo root
 - Batch YAML / multiple sim_* → tell user to use `/gwemfish-batch` (see routing table)
+
+See `issues/nautilus_slow_and_no_pool.md` and `issues/nautilus_emgw_source_centre.md`
+for known nautilus issues. `cfg["lens_mass_parametrization"]="q_phi"` is supported.

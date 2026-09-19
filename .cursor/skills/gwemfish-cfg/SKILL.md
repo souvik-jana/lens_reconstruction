@@ -174,6 +174,11 @@ Nested sampling reads **this** block. `cfg["inference"]` keys (`num_chains`, `nu
 
 **Comparing nautilus with the NUTS methods:** nautilus samples the whole prior box rather than expanding around the truth, and its default `y0gw`/`y1gw` box is `(-1, 1)` versus the truth-centred `±source_box_half_width` the others use. Set `cfg["gw"]["source_plane_bounds"]` to match, or the posteriors differ because the priors differ.
 
+Per-call cost is inflated ~6x by JAX recompiling every call (no jit on the
+nautilus likelihood path), and pool=N cannot be used (likelihood is an
+unpicklable local closure). Measured: jit+pool gives 41x GW-only, 1.7x EM-only.
+See issues/nautilus_slow_and_no_pool.md.
+
 ---
 
 ## 5. Computation cost
@@ -251,7 +256,7 @@ Measured for `EPL`+`SHEAR`, θ_E=2:
 
 | key | default | note |
 |---|---|---|
-| `cfg["gw"]["source_box_half_width"]` | `0.05` *(no default in make_default_cfg)* | `y0gw`/`y1gw` prior half-width. Naked-cusp systems sit close to the caustic (catalog 555 has 0.042″ of margin) — a box past it produces NUTS divergences that look like solver failure. Check 3 prints the margin |
+| `cfg["gw"]["source_box_half_width"]` | `0.05` *(no default in make_default_cfg)* | `y0gw`/`y1gw` prior half-width. Naked-cusp systems sit close to the caustic (catalog 555 has 0.042″ of margin) — a box past it produces NUTS divergences that look like solver failure. Check 3 prints the margin. Measured: box past the margin cost 2133s vs 172s on a corrected box. |
 | `cfg["gw"]["image_box_half_width"]` | `0.6` | half-width of the truth-centred `image_x{i}`/`image_y{i}` prior box; image-plane methods only |
 | `cfg["gw"]["n_images"]` | `4` | a **hint**. `_resolve_gw_n_images` prefers `len(ctx["x_img_gw"])` and warns on mismatch; raises if `truth_params`/`gw_obs` disagree |
 | `cfg["gw"]["error_scales"]["sigma_td"]` | `0.05` | σ = fraction × observed time delays |
@@ -310,3 +315,23 @@ Names depend on `use_parameter_layout`: `lens0_theta_E`, `lens0_e2`, `source0_n_
 | nautilus ignores your settings | put in `cfg["inference"]` instead of `cfg["nautilus"]` | move them (§4) |
 | nautilus posterior differs from NUTS | different source prior box | set `source_plane_bounds` to match (§4) |
 | `n_newton: 0` raises | it is a step count | use `cfg["nautilus"]["polish"]` (§7) |
+
+---
+
+## 13. Lens mass ellipticity — `cfg["lens_mass_parametrization"]`
+
+`"e1e2"` (default) or `"q_phi"`. Verified across fisher, deriv-approx, hmc-informed,
+nautilus-source, nautilus-image, all three modes — see `issues/` below.
+
+e1/e2 land in the output either way, **except**: fisher/deriv-approx/nautilus with
+`lens0_phi` fixed produce no e1/e2 columns at all (backfill needs phi in samples,
+not just q). hmc-informed always has them (numpyro.deterministic sites).
+
+Two known limits, both benign on tested systems:
+- fisher's Gaussian draw is unbounded and ignores the `q∈[0.01,1]` prior — near
+  round lenses (q→1) some draws land at q>1, which folds onto the 90°-rotated
+  ellipse rather than erroring. 17σ clear on tutorial systems.
+- phi is π-periodic against a hard `Uniform(-π/2,π/2)` box, no wrap. Matters only
+  for a near-vertical or near-circular lens. 44σ clear here.
+
+Worked examples: `examples/scripts/qphi_*.py`.

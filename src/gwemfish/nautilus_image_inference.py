@@ -9,7 +9,12 @@ import warnings
 import jax
 import scipy.stats as sps
 
-from .ellipticity_reparam import mass_qphi_prefixes_from_entries, qphi_derived_keys, validate_parametrization
+from .ellipticity_reparam import (
+    mass_qphi_prefixes_from_entries,
+    qphi_derived_keys,
+    swap_ellipticity_for_qphi,
+    validate_parametrization,
+)
 from .nautilus_common import (
     build_em_only_nautilus_problem,
     build_nautilus_prior,
@@ -84,6 +89,16 @@ def build_scipy_priors_for_probmodel(probmodel, built, cfg_full):
         )
         default_dists.update(reg_dists)
         registry_fixed.update(reg_fixed)
+
+    # Excluding the derived keys from keys_to_sample is not enough: the nautilus
+    # prior is built from default_dists, not from keys_to_sample, and the layout
+    # registry above put '{prefix}_e1'/'{prefix}_e2' straight into it. Without
+    # this swap nautilus samples e1/e2 *and* q as independent parameters -- the
+    # lens model then reads the sampled e1/e2 and ignores q entirely, so q comes
+    # back as its prior. Same call the other three nautilus builders make
+    # (nautilus_common.py, nautilus_source_inference.py x2).
+    if qphi_prefixes:
+        swap_ellipticity_for_qphi(default_dists, qphi_prefixes)
 
     n_images = built["n_images"]
     truth_params = built["truth_params"]

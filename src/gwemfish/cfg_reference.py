@@ -594,22 +594,49 @@ COMPLETE_CFG = {
     # ValueError without it). Everywhere else, False remains a fully supported, non-breaking default.
     "use_parameter_layout": False,
 
-    # ---- cfg["lens_mass_parametrization"]: e1/e2 vs q/phi (all modes, all methods) -----------------
+    # ---- cfg["lens_mass_parametrization"]: e1/e2 vs q/phi -------------------------------------------
     # "e1e2" (default) or "q_phi". Optional reparametrization of the main lens galaxy's mass
     # ellipticity: instead of sampling e1/e2 directly, samples q (axis ratio, Uniform(0.01, 1.0))
     # and phi (position angle in radians, Uniform(-pi/2, pi/2)), then derives e1/e2 via
     # herculens.Util.param_util.phi_q2_ellipticity (matches lenstronomy's convention exactly --
-    # see ellipticity_reparam.py). e1/e2 are still registered as numpyro.deterministic sites, so
-    # they appear in every posterior/Fisher output exactly as before regardless of which
-    # parametrization was used to sample them -- corner plots, diagnostics, params2kwargs,
-    # to_source_plane_samples all keep working unchanged. Works uniformly across hmc, nautilus,
-    # nautilus-source, fisher, deriv-approx, and their -source variants; both
-    # use_parameter_layout=False (flat "lens_e1"/"lens_q"/"lens_phi") and True ("lens{i}_e1"/
-    # "lens{i}_q"/"lens{i}_phi" for the mass component using e1/e2 -- PIEMD/DPIE already sample
-    # q/phi natively and are unaffected). Override the q/phi priors themselves the same way as any
-    # other parameter, via cfg['priors']['lens_q']/['lens_phi'] (or 'lens{i}_q'/'lens{i}_phi').
-    # Setting an e1/e2 override while this is "q_phi" (or a q/phi override while "e1e2") logs one
-    # warning at construction -- that override is unused, not applied.
+    # see ellipticity_reparam.py). Both use_parameter_layout=False (flat "lens_e1"/"lens_q"/
+    # "lens_phi") and True ("lens{i}_e1"/"lens{i}_q"/"lens{i}_phi" for the mass component using
+    # e1/e2 -- PIEMD/DPIE already sample q/phi natively and are unaffected). Override the q/phi
+    # priors the same way as any other parameter, via cfg['priors']['lens_q']/['lens_phi'] (or
+    # 'lens{i}_q'/'lens{i}_phi'). Setting an e1/e2 override while this is "q_phi" (or a q/phi
+    # override while "e1e2") logs one warning at construction -- that override is unused.
+    #
+    # VERIFIED (examples/scripts/qphi_coverage_matrix.py, 4-image system): fisher, fisher-source,
+    # deriv-approx(-source), hmc-informed(-source), nautilus-source and nautilus-image, across
+    # GW-only / EM-only / EM+GW. Not covered: plain hmc and hmc-source (only the informed
+    # variants were run), and use_parameter_layout=False (one script only).
+    #
+    # WHETHER e1/e2 APPEAR IN THE OUTPUT DEPENDS ON THE METHOD AND ON WHETHER phi IS FREE.
+    # They are numpyro.deterministic sites, so hmc/hmc-informed always return them. fisher,
+    # deriv-approx and nautilus return only free parameters, and get e1/e2 only via
+    # add_qphi_columns_to_samples, which backfills ONLY when both q and phi were sampled
+    # (ellipticity_reparam.py:167). So with phi fixed to a literal, a fisher/deriv-approx/nautilus
+    # posterior has NO lens_e1/lens_e2 columns at all -- anything downstream that expects them
+    # (corner plots, to_source_plane_samples) must derive them from q and the fixed phi itself.
+    #
+    # q/phi and e1e2 are DIFFERENT PRIORS -- Uniform x Uniform versus TruncatedNormal(0, 0.3,
+    # -1, 1) per component -- not a reparametrization of one prior into the other, so the two
+    # modes are not expected to give identical posteriors. Measured on a well-constrained EM-only
+    # system they agree to 0.04 sigma in q and 0.03 sigma in phi, because there the likelihood
+    # dominates both priors; expect a visible gap where the data is weak.
+    #
+    # Two known limitations, both benign on well-constrained systems but worth knowing:
+    #   * fisher/fisher-source draw an UNBOUNDED Gaussian N(u0, cov) that does not consult the
+    #     prior, so with q within a few sigma of 1.0 (a round lens) some draws land at q > 1.
+    #     Those are not garbage -- (q, phi) and (1/q, phi+pi/2) give identical e1/e2, so they fold
+    #     onto the 90-degree-rotated ellipse -- but q > 1 is not a valid axis ratio and the e1
+    #     marginal becomes bimodal with opposite-sign modes. Every other method enforces the bound
+    #     (numpyro's interval bijector for NUTS, the unit-cube map for nautilus). Measured 17 sigma
+    #     clear of the bound on the tutorial systems.
+    #   * phi is pi-periodic (cos(2*phi)) but its prior is a hard Uniform(-pi/2, pi/2) box with
+    #     walls rather than a wrap. A lens oriented near +-pi/2, or a near-circular lens where phi
+    #     is barely constrained, will show posterior mass split across both edges with nothing
+    #     reconnecting them. Measured 44 sigma clear on the tutorial systems.
     "lens_mass_parametrization": "e1e2",
 
     # ---- cfg["nautilus"]: Nautilus nested-sampler controls ----------------------------------------

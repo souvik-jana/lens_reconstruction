@@ -1,16 +1,16 @@
 """
-Scaled-down copy of tutorial/tutorial_gw_only.py: same CFG, same priors,
-same 3 methods (fisher-source, deriv-approx-source, nautilus-source), same
-NAUTILUS_PRIOR_MODE="fisher_h0" flow -- only the nautilus sampling budget is
-cut down (n_live/n_eff/n_like_max) so all 3 methods finish in one sitting,
-each timed, for a quick comparative check before committing to a full run.
+GW-only tutorial: fisher-source, deriv-approx-source, nautilus-source.
 
-Does not modify tutorial/tutorial_gw_only.py. Output goes to
-nautilus-parallel-check/outputs/gw_only_quick_check/, not tutorial/outputs/.
+Flip RUN_* toggles to enable/disable methods. Comparison plots only run when
+two or more methods produced samples (no error if a method is off).
+
+Nautilus priors: NAUTILUS_PRIOR_MODE = "fisher_h0" | "manual".
+Change mode/span → set NAUTILUS_RESUME = False (or delete the .hdf5).
+
+Does not modify tutorial/gwemfish_tutorial.py.
 """
 
 import os
-import time
 
 os.environ["XLA_FLAGS"] = "--xla_force_host_platform_device_count=20"
 import jax
@@ -32,6 +32,7 @@ from gwemfish import (
     plot_source_plane_caustic_with_localization_from_setup,
     plot_source_posterior,
     plot_system_observation,
+    prune_gw_images,
     run_inference,
     setup_em_observation,
     setup_gw_observation,
@@ -40,31 +41,23 @@ from gwemfish.corner_plot_utils import create_default_param_groups, plot_multi_c
 from gwemfish.fisher import invert_fisher_matrix
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-OUTPUT_DIR = os.path.join(REPO_ROOT, "nautilus-parallel-check", "outputs", "gw_only_quick_check")
+OUTPUT_DIR = os.path.join(REPO_ROOT, "inversion-analysis", "outputs", "gw_only_sigma05")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 RUN_FISHER_SOURCE = True
 RUN_DERIV_APPROX_SOURCE = True
-RUN_NAUTILUS_SOURCE = True
+RUN_NAUTILUS_SOURCE = False
 
 NAUTILUS_CHECKPOINT = os.path.join(OUTPUT_DIR, "nautilus_checkpoint.hdf5")
 NAUTILUS_RESUME = False
-NAUTILUS_PRIOR_MODE = "fisher_h0"  # same as tutorial
-NAUTILUS_SIGMA_SPAN = 3.5  # same as tutorial
-
-# Scaled down vs tutorial (n_live=2000, n_eff=5000, n_like_max=500_000) so
-# this finishes in one sitting -- worst case ~4000*0.216s ~ 14 min.
-NAUTILUS_N_LIVE = 200
-NAUTILUS_N_EFF = 500
-NAUTILUS_N_LIKE_MAX = 4000
+NAUTILUS_PRIOR_MODE = "fisher_h0"  # "fisher_h0" | "manual"
+NAUTILUS_SIGMA_SPAN = 3.5
 
 METHOD_COLORS = {
     "fisher-source": "C4",
     "deriv-approx-source": "C3",
     "nautilus-source": "C1",
 }
-
-TIMINGS = {}
 
 
 def apply_fisher_h0_priors(ctx, span):
@@ -89,21 +82,22 @@ def apply_fisher_h0_priors(ctx, span):
 
 CFG = make_default_cfg()
 CFG["use_parameter_layout"] = True
-CFG["lens_mass_parametrization"] = "q_phi"
-CFG["gw"]["n_images"] = 4
+CFG["lens_mass_parametrization"] = "e1e2" #"e1e2"#"q_phi"  # "e1e2" to go back
+CFG["gw"]["n_images"] = 4#2
 CFG["gw"]["source_box_half_width"] = 0.8
-CFG["gw"]["source_pos"] = (0.02, 0.01)
+# CFG["source_plane"]["n_images"] = 2
+CFG["gw"]["source_pos"] = (0.02, 0.00001)
 CFG["gw"]["solver_params"]["backend"] = "jaxtronomy"
-CFG["gw"]["solver_params"]["jaxtronomy"]["solver"] = "analytical"
+CFG["gw"]["solver_params"]["jaxtronomy"]["solver"] = "analytical"#"lenstronomy"
 CFG["gw"]["error_scales"]["sigma_td"] = 0.001
-CFG["gw"]["error_scales"]["sigma_dL_eff"] = 0.1
-CFG["inference"]["num_chains"] = 10
+CFG["gw"]["error_scales"]["sigma_dL_eff"] = 0.5 #0.1 tstar error is large going to negative values
+CFG["inference"]["num_chains"] = 12
 CFG["inference"]["num_samples"] = 14000
-CFG["inference"]["num_warmup"] = 6000
+CFG["inference"]["num_warmup"] = 9000
 CFG["nautilus"] = {
-    "n_live": NAUTILUS_N_LIVE,
-    "n_eff": NAUTILUS_N_EFF,
-    "n_like_max": NAUTILUS_N_LIKE_MAX,
+    "n_live": 2000,
+    "n_eff": 5000,
+    "n_like_max": 500_000,
     "filepath": NAUTILUS_CHECKPOINT,
     "resume": NAUTILUS_RESUME,
     "prior_check": True,
@@ -111,11 +105,21 @@ CFG["nautilus"] = {
 }
 CFG["output"]["output_dir"] = OUTPUT_DIR
 
-print(f"Nautilus budget (scaled down from tutorial): n_live={NAUTILUS_N_LIVE}, "
-      f"n_eff={NAUTILUS_N_EFF}, n_like_max={NAUTILUS_N_LIKE_MAX}")
+active = [
+    name
+    for name, flag in [
+        ("fisher-source", RUN_FISHER_SOURCE),
+        ("deriv-approx-source", RUN_DERIV_APPROX_SOURCE),
+        ("nautilus-source", RUN_NAUTILUS_SOURCE),
+    ]
+    if flag
+]
+print(f"Active methods: {', '.join(active) if active else '(none)'}")
+print(f"Nautilus prior mode: {NAUTILUS_PRIOR_MODE}, resume={NAUTILUS_RESUME}")
 
 ctx = setup_em_observation(cfg=CFG)
 ctx = setup_gw_observation(ctx, cfg=ctx["cfg"])
+# ctx = prune_gw_images(ctx, n_keep=2)
 
 truth_params = ctx["truth_params"]
 src = ctx["cfg"]["gw"]["source_pos"]
@@ -127,26 +131,32 @@ plot_system_observation(
 )
 plot_psf(ctx, cfg={"output": {"output_dir": OUTPUT_DIR, "save_psf_plot_path": "psf.png"}})
 
-Y0_LO, Y0_HI = 0.01992, 0.02005
-Y1_LO, Y1_HI = 0.0091, 0.0106
+Y0_LO, Y0_HI = -0.06, 0.06#0.018, 0.022#0.01992, 0.02005
+Y1_LO, Y1_HI = -0.06, 0.06#0.004, 0.016#0.0091, 0.0106
 
 PRIORS = {
     "lens1_gamma1": float(truth_params["lens1_gamma1"]),
     "lens1_gamma2": float(truth_params["lens1_gamma2"]),
     "lens1_ra_0": float(truth_params["lens1_ra_0"]),
     "lens1_dec_0": float(truth_params["lens1_dec_0"]),
-    "lens0_phi": float(truth_params["lens0_phi"]),
-    "lens0_q": dist.Uniform(0.75, 0.85),
     "lens0_theta_E": float(truth_params["lens0_theta_E"]),
     "lens0_center_x": float(truth_params["lens0_center_x"]),
     "lens0_center_y": float(truth_params["lens0_center_y"]),
-    "lens0_gamma": dist.Uniform(1.5, 2.4),
-    "T_star": float(truth_params["T_star"]),
-    "dL": float(truth_params["dL"]),
+    # "T_star": float(truth_params["T_star"]),  # dist.Uniform(1e-1, 1e12),
+    # "dL": float(truth_params["dL"]), #dist.Uniform(1e-5, 50000.0),
+    # e1e2 mode (set lens_mass_parametrization="e1e2"):
+    # "lens0_e1": dist.Uniform(-0.5, 0.5),#float(truth_params["lens0_e1"]),
+    "lens0_e2": float(truth_params["lens0_e2"]),
+    # q_phi mode: fix phi to truth
+    "lens0_phi": float(truth_params["lens0_phi"]),
+    # "lens0_q": dist.Uniform(0.75, 0.85),
+    "lens0_gamma": float(truth_params["lens0_gamma"]),#dist.Uniform(1.5, 2.4), #float(truth_params["lens0_gamma"]),
     "y0gw": dist.Uniform(Y0_LO, Y0_HI),
     "y1gw": dist.Uniform(Y1_LO, Y1_HI),
 }
 ctx["cfg"]["priors"] = dict(PRIORS)
+
+# This is for nautilus-source method
 ctx["cfg"]["gw"]["source_plane_bounds"] = {
     "y0gw": (Y0_LO, Y0_HI),
     "y1gw": (Y1_LO, Y1_HI),
@@ -157,7 +167,6 @@ truths_by_method = {}
 
 if RUN_FISHER_SOURCE:
     print("\n--- GW-only: fisher-source ---\n")
-    t0 = time.perf_counter()
     samples, truths = run_inference(
         ctx,
         mode="GW-only",
@@ -167,8 +176,6 @@ if RUN_FISHER_SOURCE:
             "output": {"output_dir": OUTPUT_DIR, "json_tag": "fisher_source"},
         },
     )
-    TIMINGS["fisher-source"] = time.perf_counter() - t0
-    print(f"[TIMING] fisher-source: {TIMINGS['fisher-source']:.1f}s")
     truths.setdefault("y0gw", float(src[0]))
     truths.setdefault("y1gw", float(src[1]))
     corner_dir = os.path.join(OUTPUT_DIR, "fisher_source")
@@ -186,7 +193,6 @@ if RUN_FISHER_SOURCE:
 
 if RUN_DERIV_APPROX_SOURCE:
     print("\n--- GW-only: deriv-approx-source ---\n")
-    t0 = time.perf_counter()
     samples, truths = run_inference(
         ctx,
         mode="GW-only",
@@ -197,8 +203,6 @@ if RUN_DERIV_APPROX_SOURCE:
             "inference": {"informed": True},
         },
     )
-    TIMINGS["deriv-approx-source"] = time.perf_counter() - t0
-    print(f"[TIMING] deriv-approx-source: {TIMINGS['deriv-approx-source']:.1f}s")
     truths.setdefault("y0gw", float(src[0]))
     truths.setdefault("y1gw", float(src[1]))
     corner_dir = os.path.join(OUTPUT_DIR, "deriv_approx_source")
@@ -236,11 +240,17 @@ if RUN_NAUTILUS_SOURCE:
             )
         print(f"\n--- Nautilus priors from Fisher H0 (span={NAUTILUS_SIGMA_SPAN}) ---\n")
         apply_fisher_h0_priors(ctx, NAUTILUS_SIGMA_SPAN)
+    elif NAUTILUS_PRIOR_MODE == "manual":
+        print("\n--- Nautilus manual priors (hand-set Uniforms / source_plane_bounds) ---\n")
+        ctx["cfg"]["priors"] = dict(PRIORS)
+        ctx["cfg"]["gw"]["source_plane_bounds"] = {
+            "y0gw": (Y0_LO, Y0_HI),
+            "y1gw": (Y1_LO, Y1_HI),
+        }
     else:
         raise ValueError(f"unknown NAUTILUS_PRIOR_MODE={NAUTILUS_PRIOR_MODE!r}")
 
     print(f"\n--- GW-only: nautilus-source (resume={NAUTILUS_RESUME}) ---\n")
-    t0 = time.perf_counter()
     samples, truths = run_inference(
         ctx,
         mode="GW-only",
@@ -250,16 +260,12 @@ if RUN_NAUTILUS_SOURCE:
             "nautilus": {
                 "filepath": NAUTILUS_CHECKPOINT,
                 "resume": NAUTILUS_RESUME,
-                "n_live": NAUTILUS_N_LIVE,
-                "n_eff": NAUTILUS_N_EFF,
-                "n_like_max": NAUTILUS_N_LIKE_MAX,
                 "prior_check": True,
             },
             "output": {"output_dir": OUTPUT_DIR, "json_tag": "nautilus_source"},
         },
     )
-    TIMINGS["nautilus-source"] = time.perf_counter() - t0
-    print(f"[TIMING] nautilus-source: {TIMINGS['nautilus-source']:.1f}s")
+    # nautilus truths omit y0gw/y1gw unless truth_params was backfilled
     truths.setdefault("y0gw", float(src[0]))
     truths.setdefault("y1gw", float(src[1]))
     corner_dir = os.path.join(OUTPUT_DIR, "nautilus_source")
@@ -310,9 +316,5 @@ else:
             plot_datapoints=False,
         )
         print(f"Comparison saved under {OUTPUT_DIR}/comparison_*.png")
-
-print("\n=== TIMING SUMMARY ===")
-for method, dt in TIMINGS.items():
-    print(f"  {method}: {dt:.1f}s")
 
 print(f"\nDone. Outputs under {OUTPUT_DIR}/")

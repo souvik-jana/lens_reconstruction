@@ -94,6 +94,7 @@ from gwemfish import (
     setup_em_observation,
 )
 from gwemfish.corner_plot_utils import create_default_param_groups, plot_multi_comparison_corner
+from gwemfish.fisher import invert_fisher_matrix
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
@@ -207,11 +208,8 @@ print("\n--- Nautilus priors from Fisher H0 (deriv-approx) ---\n")
 keys = ctx["likelihood"]["keys_to_include"]
 u0 = np.asarray(ctx["likelihood"]["u0"])
 H0 = np.asarray(ctx["fisher"]["H0"])
-FM = -H0
-try:
-    cov = np.linalg.inv(FM)
-except np.linalg.LinAlgError:
-    cov = np.linalg.pinv(FM)
+regularize = bool((ctx.get("cfg") or {}).get("inference", {}).get("regularize", False))
+cov = np.asarray(invert_fisher_matrix(-H0, regularize=regularize))
 sigmas = np.sqrt(np.diag(cov))
 
 for i, key in enumerate(keys):

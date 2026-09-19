@@ -235,54 +235,11 @@ def _save_pipeline_json(
         json.dump(_to_serializable(payload), f, indent=2)
 
 
-def _fisher_covariance(FM, keys=None):
-    """Invert the Fisher matrix in a whitened basis, then check it is usable.
+def _fisher_covariance(FM, keys=None, regularize=False):
+    """Invert the Fisher matrix via Jacobi whitening (see invert_fisher_matrix)."""
+    from .fisher import invert_fisher_matrix
 
-    ``u0`` is in raw physical units, so the parameters span many orders of magnitude
-    (dL ~ 3e4 Mpc, T_star ~ 3e7 s, e2 ~ 0.6). A direct ``inv`` on that matrix can have
-    a condition number around 1e20 -- past what float64 can invert -- and returns a
-    covariance with small *negative* eigenvalues, which makes
-    ``multivariate_normal`` produce NaN samples with no error raised.
-
-    Rescaling each row/column by 1/sqrt(|FM_ii|) removes the unit disparity, which is
-    almost all of the ill-conditioning: on catalog system 555 it takes the condition
-    number from 8e19 to 8e12, comfortably invertible. The scaling cancels exactly, so
-    this is the same covariance, just computed without the round-off.
-    """
-    import numpy as _np
-    import jax.numpy as jnp
-
-    FM_np = _np.asarray(FM, dtype=float)
-    diag = _np.abs(_np.diag(FM_np))
-    scale = _np.where(diag > 0, 1.0 / _np.sqrt(_np.where(diag > 0, diag, 1.0)), 1.0)
-
-    FM_scaled = FM_np * scale[:, None] * scale[None, :]
-    try:
-        cov_scaled = _np.linalg.inv(FM_scaled)
-    except _np.linalg.LinAlgError:
-        cov_scaled = _np.linalg.pinv(FM_scaled)
-    cov = cov_scaled * scale[:, None] * scale[None, :]
-    cov = 0.5 * (cov + cov.T)
-
-    eig = _np.linalg.eigvalsh(cov)
-    if eig.min() <= 0:
-        worst = keys[int(_np.argmin(_np.abs(_np.linalg.eigvalsh(FM_np))))] if keys else "?"
-        warnings.warn(
-            f"Fisher covariance is not positive definite (min eigenvalue "
-            f"{eig.min():.3e}); the Fisher matrix is singular to working precision "
-            f"along a near-degenerate direction (weakest parameter: {worst}). This "
-            "usually means the observation does not constrain every free parameter -- "
-            "e.g. a 3-image system gives 2 time delays + 3 dL_eff = 5 observables, so "
-            "5 free parameters leave nothing over. Fix one parameter via cfg['priors'] "
-            "or add EM data. Clipping the non-positive eigenvalues so sampling can "
-            "proceed, but treat the widths along those directions as unbounded.",
-            UserWarning, stacklevel=2,
-        )
-        vals, vecs = _np.linalg.eigh(cov)
-        floor = max(eig.max(), 1.0) * 1e-12
-        cov = (vecs * _np.maximum(vals, floor)) @ vecs.T
-        cov = 0.5 * (cov + cov.T)
-    return jnp.asarray(cov)
+    return invert_fisher_matrix(FM, regularize=regularize)
 
 
 def make_default_cfg() -> Dict[str, Any]:
@@ -400,7 +357,8 @@ def make_default_cfg() -> Dict[str, Any]:
             # Per-check thresholds; anything omitted keeps gwemfish's default.
             # See gwemfish.diagnostics.DEFAULT_THRESHOLDS for the values and how they
             # were calibrated. Keys: position_tol (arcsec), observable_rtol,
-            # condition_limit, gradient_sigma.
+            # condition_limit, gradient_sigma, inversion_residual,
+            # inversion_residual_physical.
             "diagnostics_thresholds": {},
         },
         "plot": {
@@ -2161,7 +2119,10 @@ def run_inference(
 
     if method_norm in ("fisher", "fisher-source"):
         FM = -H0
-        cov = _fisher_covariance(FM, keys_to_include)
+        cov = _fisher_covariance(
+            FM, keys_to_include,
+            regularize=bool(cfg_full["inference"].get("regularize", False)),
+        )
 
         key = jax.random.PRNGKey(int(setup_seed))
         n_fisher_samples = int(cfg_full["inference"]["n_fisher_samples"])

@@ -36,6 +36,7 @@ from gwemfish import (
     setup_gw_observation,
 )
 from gwemfish.corner_plot_utils import plot_multi_comparison_corner
+from gwemfish.fisher import invert_fisher_matrix
 from gwemfish.nautilus_source_inference import build_gw_source_plane_problem
 
 N_LIVE = 200
@@ -74,11 +75,8 @@ def apply_fisher_h0_priors(ctx, span):
     keys = ctx["likelihood"]["keys_to_include"]
     u0 = np.asarray(ctx["likelihood"]["u0"])
     H0 = np.asarray(ctx["fisher"]["H0"])
-    FM = -H0
-    try:
-        cov = np.linalg.inv(FM)
-    except np.linalg.LinAlgError:
-        cov = np.linalg.pinv(FM)
+    regularize = bool((ctx.get("cfg") or {}).get("inference", {}).get("regularize", False))
+    cov = np.asarray(invert_fisher_matrix(-H0, regularize=regularize))
     sigmas = np.sqrt(np.diag(cov))
     updated = {}
     for i, key in enumerate(keys):

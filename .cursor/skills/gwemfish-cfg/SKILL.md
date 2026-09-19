@@ -87,7 +87,7 @@ cfg["gw"]["solver_params"] = {
 
 ## 2. Diagnostics — `cfg["inference"]["diagnostics"]`
 
-Six checks at the **truth** point, before sampling. The truth is the only place a solver failure can be told apart from real physics: during sampling, "solver missed an image" and "source moved outside the caustic" both look like a wrong image count.
+Seven checks at the **truth** point, before sampling. The truth is the only place a solver failure can be told apart from real physics: during sampling, "solver missed an image" and "source moved outside the caustic" both look like a wrong image count.
 
 | value | behaviour |
 |---|---|
@@ -103,8 +103,9 @@ Six checks at the **truth** point, before sampling. The truth is the only place 
 | 4 | parameters | `n_free > n_obs` — **GW-only only**; `EM+GW` / `EM-only` print the tally marked `NA` | GW-only only |
 | 5 | fisher cond | eigenvalue positive above noise floor (truth is a saddle); `cond > condition_limit` | yes |
 | 6 | gradient | any `\|g0/√\|H_ii\|\| > gradient_sigma`; non-finite gradient | yes |
+| 7 | inversion | `max\|FsCs-I\| >= inversion_residual` or `max\|FC-I\| >= inversion_residual_physical`; invert `LinAlgError` | yes |
 
-Checks 1–3 need a solver (skipped for image-plane methods and `EM-only`); 4–6 need a Fisher expansion (skipped for the two nautilus methods).
+Checks 1–3 need a solver (skipped for image-plane methods and `EM-only`); 4–7 need a Fisher expansion (skipped for the two nautilus methods). Default `warn` prints FAIL and continues.
 
 Check 4 counts, check 5 measures. With EM data the image pixels constrain the model too and never enter `n_obs`, so counting 16 free parameters against a quad's 7 GW observables would fail every `EM+GW` run — hence `NA` there, with the verdict left to check 5.
 
@@ -118,6 +119,8 @@ Give **only what you want to change**; omitted keys keep the default. A misspell
 | `observable_rtol` | `1e-3` | 2 | time delays, dL_eff |
 | `condition_limit` | `1e10` | 5 | scaled Fisher condition number |
 | `gradient_sigma` | `0.5` | 6 | how many σ the truth sits from the peak |
+| `inversion_residual` | `1e-6` | 7 | max\|FsCs-I\| after Jacobi invert |
+| `inversion_residual_physical` | `0.5` | 7 | physical max\|FC-I\| (unit disparity; looser) |
 
 There is no per-check on/off switch. To disarm one, raise its threshold rather than setting `diagnostics: "off"`, which disables the checks still doing useful work.
 
@@ -265,7 +268,7 @@ Measured for `EPL`+`SHEAR`, θ_E=2:
 | `cfg["gw"]["error_scales"]["epsilon"]` | — | width on the ray-shooting self-consistency terms |
 | `cfg["inference"]["fisher_order"]` | `2` | 2 = Hessian; 3 adds `F0`; 4 adds `Q0` |
 | `cfg["inference"]["H0"]` | `None` | optional Hessian override for informed NUTS |
-| `cfg["inference"]["regularize"]` | `False` *(no default)* | clips small/negative eigenvalues in the informed-NUTS mass matrix |
+| `cfg["inference"]["regularize"]` | `False` *(no default)* | optional scaled-space clip in `invert_fisher_matrix` for fisher / informed NUTS / nautilus H0 priors |
 | `cfg["use_parameter_layout"]` | `False` | `True` gives `lens{i}_*`/`source{j}_*`/`light{k}_*` names; required for EM-only nautilus |
 
 ---

@@ -197,12 +197,11 @@ NAUTILUS_SIGMA_SPAN = 2.0  # 5.0 for em_nautilus.py
 print("\n--- Nautilus priors from Fisher H0 (deriv-approx) ---\n")
 keys = ctx["likelihood"]["keys_to_include"]
 u0 = np.asarray(ctx["likelihood"]["u0"])
+from gwemfish.fisher import invert_fisher_matrix
+
 H0 = np.asarray(ctx["fisher"]["H0"])
-FM = -H0
-try:
-    cov = np.linalg.inv(FM)
-except np.linalg.LinAlgError:
-    cov = np.linalg.pinv(FM)
+regularize = bool((ctx.get("cfg") or {}).get("inference", {}).get("regularize", False))
+cov = np.asarray(invert_fisher_matrix(-H0, regularize=regularize))
 sigmas = np.sqrt(np.diag(cov))
 
 for i, key in enumerate(keys):
@@ -382,7 +381,7 @@ run_inference(ctx, mode="GW-only", method="nautilus-source",
 
 `n_newton` (default 8) is a **step count, not a switch**, and `0` raises — zero steps means every derivative comes back exactly `0.0` with no error and a NaN covariance. The only on/off switch is `cfg["nautilus"]["polish"]`, and only `nautilus-source` reads it.
 
-**Diagnostics — `cfg["inference"]["diagnostics"]`:** `"warn"` (default, prints and continues), `"raise"` (aborts before sampling), `"off"`. Six checks at truth:
+**Diagnostics — `cfg["inference"]["diagnostics"]`:** `"warn"` (default, prints and continues), `"raise"` (aborts before sampling), `"off"`. Seven checks at truth:
 
 | # | check | fails when |
 |---|---|---|
@@ -392,6 +391,7 @@ run_inference(ctx, mode="GW-only", method="nautilus-source",
 | 4 | parameters | more free parameters than GW observables — **GW-only only**; `EM+GW` / `EM-only` print the tally marked `NA` |
 | 5 | fisher cond | `cond > 1e10`, or a Hessian eigenvalue positive above the noise floor (truth is a saddle) |
 | 6 | gradient | truth is not the likelihood peak (`\|g0/√\|H_ii\|\| > 0.5`) |
+| 7 | inversion | Jacobi invert residual: `max\|FsCs-I\| >= 1e-6` or physical `max\|FC-I\| >= 0.5` |
 
 Thresholds are per-key overridable via `cfg["inference"]["diagnostics_thresholds"]`; give only what you change. Prefer raising one threshold over `diagnostics: "off"`, which disables the checks still working.
 

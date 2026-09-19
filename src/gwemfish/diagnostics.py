@@ -1,7 +1,7 @@
 """
 Pre-inference diagnostics.
 
-Six checks run at the *true* parameters, before any sampling starts. The truth
+Seven checks run at the *true* parameters, before any sampling starts. The truth
 point is the one place where the right answer is known independently, which makes
 it the only place a solver failure can be distinguished from real physics: during
 sampling, "the solver missed an image" and "the source moved outside the caustic"
@@ -24,9 +24,14 @@ both look like a wrong image count, and both simply reject.
                   and it is judged in every mode.
   6. gradient     is the log-density gradient at truth ~0, i.e. is the truth actually
                   at the peak the Fisher expansion assumes it is?
+  7. inversion    is the Jacobi inverse of F=-H0 accurate? Two printed
+                  verdicts: max|F_s C_s - I| (limit inversion_residual, 1e-6)
+                  and physical max|F C - I| (limit inversion_residual_physical,
+                  0.5). Fail prints a warning and does not stop sampling
+                  unless diagnostics='raise'.
 
 Checks 1-3 need a solver, so they are skipped for image-plane methods (which sample
-image positions directly) and for EM-only. Checks 4-6 need a Fisher expansion, so
+image positions directly) and for EM-only. Checks 4-7 need a Fisher expansion, so
 they are skipped for the nautilus methods, which never build one.
 """
 
@@ -283,6 +288,12 @@ DEFAULT_THRESHOLDS = {
     # from the peak. A correct setup lands at ~1e-12; 0.5 flags a genuinely
     # off-centre expansion rather than round-off.
     "gradient_sigma": 0.5,
+    # Check 7: scaled residual of the Jacobi invert. A good inverse is
+    # typically 1e-14 to 1e-10; 1e-6 fails a junk / non-finite inverse.
+    "inversion_residual": 1e-6,
+    # Check 7: physical residual. Unit disparity makes this larger than the
+    # scaled residual; 0.5 is the cut, not 1e-6.
+    "inversion_residual_physical": 0.5,
 }
 
 
@@ -410,6 +421,80 @@ def check_conditioning(H0, keys, condition_limit=None):
     return report
 
 
+def check_inversion(H0, residual_limit=None, residual_limit_physical=None):
+    """Check 7: is the Jacobi inverse of F=-H0 accurate in scaled and physical space?"""
+    from .fisher import invert_fisher_matrix
+
+    H0 = np.asarray(H0, dtype=float)
+    limit = residual_limit if residual_limit is not None else DEFAULT_THRESHOLDS["inversion_residual"]
+    limit_phys = (
+        residual_limit_physical if residual_limit_physical is not None
+        else DEFAULT_THRESHOLDS["inversion_residual_physical"]
+    )
+    FM = -H0
+    try:
+        cov = np.asarray(invert_fisher_matrix(FM, regularize=False))
+    except np.linalg.LinAlgError:
+        return {
+            "ok": False,
+            "ok_scaled": False,
+            "ok_physical": False,
+            "messages": [
+                "Scaled Fisher is singular; Jacobi invert raised LinAlgError. "
+                "Freeze a parameter or set cfg['inference']['regularize']=True."
+            ],
+            "residual": None,
+            "residual_physical": None,
+            "max_residual": float("nan"),
+            "max_residual_physical": float("nan"),
+            "inversion_residual_limit": float(limit),
+            "inversion_residual_physical_limit": float(limit_phys),
+        }
+    n = FM.shape[0]
+    diag = np.abs(np.diag(FM))
+    scale = np.where(diag > 0, 1.0 / np.sqrt(np.where(diag > 0, diag, 1.0)), 1.0)
+    FM_s = FM * scale[:, None] * scale[None, :]
+    cov_s = cov / scale[:, None] / scale[None, :]
+    residual = FM_s @ cov_s - np.eye(n)
+    residual_physical = FM @ cov - np.eye(n)
+    max_residual = float(np.max(np.abs(residual))) if residual.size else float("nan")
+    max_residual_physical = (
+        float(np.max(np.abs(residual_physical))) if residual_physical.size else float("nan")
+    )
+    ok_scaled = bool(np.isfinite(max_residual) and max_residual < limit)
+    ok_physical = bool(np.isfinite(max_residual_physical) and max_residual_physical < limit_phys)
+    report = {
+        "ok": ok_scaled and ok_physical,
+        "ok_scaled": ok_scaled,
+        "ok_physical": ok_physical,
+        "messages": [],
+        "residual": residual.tolist(),
+        "residual_physical": residual_physical.tolist(),
+        "max_residual": max_residual,
+        "max_residual_physical": max_residual_physical,
+        "inversion_residual_limit": float(limit),
+        "inversion_residual_physical_limit": float(limit_phys),
+    }
+    if not np.isfinite(max_residual):
+        report["messages"].append(
+            "Fisher inverse residual is not finite -- Jacobi invert of -H0 failed."
+        )
+    elif max_residual >= limit:
+        report["messages"].append(
+            f"max|Fs Cs-I| {max_residual:.3e} exceeds limit {limit:.1e}: "
+            "the Jacobi inverse of -H0 is not accurate."
+        )
+    if not np.isfinite(max_residual_physical):
+        report["messages"].append("Physical Fisher inverse residual is not finite.")
+    elif max_residual_physical >= limit_phys:
+        report["messages"].append(
+            f"max|FC-I| {max_residual_physical:.3e} exceeds limit {limit_phys:.1e} "
+            "(physical units; often larger than the scaled residual because of "
+            "unit disparity)."
+        )
+    return report
+
+
 def solver_knob_hint(solver):
     """Name the settings that matter for whichever finder is in use."""
     finder = getattr(solver, "finder", None)
@@ -489,8 +574,20 @@ def format_report(report):
             f"[diag] gradient   : max |g0|/sqrt|diag H0| = "
             f"{grad['max_abs_scaled']:.3g} (thresh {grad['threshold']})   {status}"
         )
+    inv = report.get("inversion")
+    if inv is not None:
+        status_s = "OK" if inv.get("ok_scaled", inv["ok"]) else "FAIL"
+        status_p = "OK" if inv.get("ok_physical", inv["ok"]) else "FAIL"
+        lines.append(
+            f"[diag] inversion  : max|FsCs-I| = {inv['max_residual']:.3e} "
+            f"(limit {inv['inversion_residual_limit']:.1e})   {status_s}"
+        )
+        lines.append(
+            f"[diag] inversion phys: max|FC-I| = {inv['max_residual_physical']:.3e} "
+            f"(limit {inv['inversion_residual_physical_limit']:.1e})   {status_p}"
+        )
     for section in ("images", "observables", "source_box", "parameters",
-                    "conditioning", "gradient"):
+                    "conditioning", "gradient", "inversion"):
         entry = report.get(section)
         if entry:
             for msg in entry.get("messages", []):
@@ -573,6 +670,14 @@ def diagnose_system(ctx, cfg_full, method, mode, solver=None, solver_params=None
         cond = check_conditioning(H0, keys, condition_limit=thr["condition_limit"])
         report["conditioning"] = cond
         report["ok"] &= cond["ok"]
+
+        inv = check_inversion(
+            H0,
+            residual_limit=thr["inversion_residual"],
+            residual_limit_physical=thr["inversion_residual_physical"],
+        )
+        report["inversion"] = inv
+        report["ok"] &= inv["ok"]
     else:
         report["gradient_skipped"] = "no Fisher expansion for this method"
 

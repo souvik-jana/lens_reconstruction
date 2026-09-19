@@ -446,8 +446,9 @@ COMPLETE_CFG = {
         #   5 fisher cond  scaled Fisher condition number + eigenvalue range; judged in every
         #                  mode, and the real arbiter of whether the widths mean anything
         #   6 gradient     g0/sqrt|diag H0| ~ 0, i.e. truth really is at the peak
+        #   7 inversion    max|FsCs-I| (1e-6) and physical max|FC-I| (0.5); judged in every mode
         # Checks 1-3 need a solver, so they are skipped for image-plane methods and EM-only;
-        # checks 4-6 need a Fisher expansion, so they are skipped for the nautilus methods.
+        # checks 4-7 need a Fisher expansion, so they are skipped for the nautilus methods.
         # Per-check thresholds. Override any subset; omitted keys keep the default.
         # Defaults live in gwemfish.diagnostics.DEFAULT_THRESHOLDS and were calibrated
         # on real systems rather than chosen: e.g. condition_limit 1e10 sits between a
@@ -460,16 +461,18 @@ COMPLETE_CFG = {
             # "observable_rtol": 1e-3,  # check 2: time delays / dL_eff
             # "condition_limit": 1e10,  # check 5: scaled Fisher condition number
             # "gradient_sigma": 0.5,    # check 6: |g0|/sqrt|diag H0|
+            # "inversion_residual": 1e-6,  # check 7: max|FsCs-I| after Jacobi invert
+            # "inversion_residual_physical": 0.5,  # check 7: physical max|FC-I|
         },
         "diagnostics": "warn",  # "warn" (default) | "raise" | "off".
                                 # "off" is unsafe for the '-source' family: their expansion is
                                 # built AT truth, so a bad solve there corrupts everything
                                 # downstream with nothing to signal it.
-        # bool. method='hmc-informed'/'hmc-informed-source' only (passed to run_mcmc_informed).
+        # bool. Gates scaled-space eigenvalue clip in invert_fisher_matrix for every
+        # path that inverts -H0: fisher / fisher-source, informed NUTS, and
+        # nautilus_priors_from_fisher_h0. Default False (Jacobi + inv, no clip).
         # NOT present in make_default_cfg()'s returned dict -- read via
-        # cfg["inference"].get("regularize", False). If True, eigendecomposes the Fisher mass
-        # matrix and clips/regularizes small or negative eigenvalues before use (see
-        # gwemfish.inference.run_mcmc_informed docstring) -- helps when H0 is near-singular.
+        # cfg["inference"].get("regularize", False).
         "regularize": False,
     },
 
@@ -831,14 +834,13 @@ def nautilus_priors_from_fisher_h0(ctx, span=2.0):
     cfg["priors"]["y0gw"/"y1gw"] by hand for that method; this function will
     simply skip keys not present in keys_to_include.
     """
+    from .fisher import invert_fisher_matrix
+
     keys = ctx["likelihood"]["keys_to_include"]
     u0 = np.asarray(ctx["likelihood"]["u0"])
     h0 = np.asarray(ctx["fisher"]["H0"])
-    fisher_matrix = -h0
-    try:
-        cov = np.linalg.inv(fisher_matrix)
-    except np.linalg.LinAlgError:
-        cov = np.linalg.pinv(fisher_matrix)
+    regularize = bool((ctx.get("cfg") or {}).get("inference", {}).get("regularize", False))
+    cov = np.asarray(invert_fisher_matrix(-h0, regularize=regularize))
     sigmas = np.sqrt(np.diag(cov))
 
     priors = ctx["cfg"].setdefault("priors", {})

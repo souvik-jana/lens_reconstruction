@@ -60,8 +60,8 @@ def run_mcmc_informed(model, u0, keys_to_include, H0,
                       regularize=False):
     """Run MCMC informed by Fisher Hessian.
 
-    Computes cov = inv(-H0), initialises chains near u0 with small
-    perturbations, and sets the NUTS mass matrix from the covariance.
+    Computes cov via Jacobi invert of -H0, initialises chains near u0 with
+    small perturbations, and sets the NUTS mass matrix from the covariance.
 
     Args:
         model:            Numpyro model function.
@@ -78,11 +78,8 @@ def run_mcmc_informed(model, u0, keys_to_include, H0,
                           (default 0.1 = 10% of posterior sigma).
                           Ensures chains differ for reliable r-hat.
         rng_key:          Random key (default: None → PRNGKey(2)).
-        regularize:       If True, use eigendecomposition to regularise the
-                          Fisher matrix before inversion. Eigenvalues below
-                          1e-6 × max(eigenvalue) are clamped, so near-degenerate
-                          directions (e.g. gamma/theta_E/kappa) get large-but-finite
-                          sigma instead of NaN from jnp.linalg.inv on a singular matrix.
+        regularize:       If True, clip non-positive eigenvalues of the Jacobi
+                          inverse in whitened space (see invert_fisher_matrix).
                           Enable via cfg['inference']['regularize']=True (default False).
 
     Returns:
@@ -91,19 +88,10 @@ def run_mcmc_informed(model, u0, keys_to_include, H0,
     if rng_key is None:
         rng_key = random.PRNGKey(2)
 
-    FM = -H0
-    if regularize:
-        # Eigendecomposition: FM = V · diag(λ) · Vᵀ
-        # Clamp eigenvalues below 1e-6 * max(λ): degenerate directions get
-        # large-but-finite variance instead of NaN from a near-singular inverse.
-        eigvals, eigvecs = jnp.linalg.eigh(FM)
-        eigvals_reg = jnp.maximum(eigvals, jnp.max(eigvals) * 1e-6)
-        cov         = (eigvecs * (1.0 / eigvals_reg)) @ eigvecs.T * (scale ** 2)
-        mass_matrix = (eigvecs * eigvals_reg)          @ eigvecs.T / (scale ** 2)
-    else:
-        cov         = jnp.linalg.inv(FM) * (scale ** 2)
-        mass_matrix = jnp.linalg.inv(cov)
-    sigmas      = jnp.sqrt(jnp.diag(cov))
+    from .fisher import invert_fisher_matrix
+
+    cov = invert_fisher_matrix(-H0, regularize=regularize) * (scale ** 2)
+    sigmas = jnp.sqrt(jnp.diag(cov))
 
     rng_key, subkey = random.split(rng_key)
     noise   = random.normal(subkey, shape=(num_chains, len(u0))) * sigmas * perturb_scale
@@ -128,8 +116,6 @@ def run_mcmc_informed(model, u0, keys_to_include, H0,
         init_strategy=init_to_value(values=init_values),
         inverse_mass_matrix=cov,
     )
-    # kernel._mass_matrix_adapter.mass_matrix_sqrt = jnp.linalg.cholesky(
-    #     jnp.linalg.inv(mass_matrix))
 
     mcmc = MCMC(kernel, num_warmup=num_warmup, num_samples=num_samples,
                 num_chains=num_chains, chain_method='parallel', progress_bar=True)

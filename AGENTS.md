@@ -98,7 +98,7 @@ cp -r .cursor/skills/gwemfish-local.example ~/.cursor/skills/gwemfish-local
 
 | Skill | Role |
 |-------|------|
-| `gwemfish-simulate`, `gwemfish-infer`, `gwemfish-plot`, `gwemfish-batch`, `gwemfish-pal` | GWEMFISH pipeline |
+| `gwemfish-simulate`, `gwemfish-infer`, `gwemfish-cfg`, `gwemfish-plot`, `gwemfish-batch`, `gwemfish-pal` | GWEMFISH pipeline |
 | `pal-infer`, `pal-plot`, `pal-sim` | PyAutoLens fit/plot/sim |
 | `lenstronomy-infer`, `lenstronomy-sim` | lenstronomy cross-checks |
 | `lensing-mock` | Batch YAML orchestration (sibling repo scripts) |

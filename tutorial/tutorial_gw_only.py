@@ -45,7 +45,7 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 RUN_FISHER_SOURCE = True
 RUN_DERIV_APPROX_SOURCE = True
-RUN_NAUTILUS_SOURCE = True
+RUN_NAUTILUS_SOURCE = False
 
 NAUTILUS_CHECKPOINT = os.path.join(OUTPUT_DIR, "nautilus_checkpoint.hdf5")
 NAUTILUS_RESUME = False
@@ -84,18 +84,18 @@ def apply_fisher_h0_priors(ctx, span):
 
 CFG = make_default_cfg()
 CFG["use_parameter_layout"] = True
-CFG["lens_mass_parametrization"] = "q_phi"  # "e1e2" to go back
+CFG["lens_mass_parametrization"] = "e1e2" #"e1e2"#"q_phi"  # "e1e2" to go back
 CFG["gw"]["n_images"] = 4#2
 CFG["gw"]["source_box_half_width"] = 0.8
 # CFG["source_plane"]["n_images"] = 2
-CFG["gw"]["source_pos"] = (0.02, 0.01)
+CFG["gw"]["source_pos"] = (0.02, 0.00001)
 CFG["gw"]["solver_params"]["backend"] = "jaxtronomy"
 CFG["gw"]["solver_params"]["jaxtronomy"]["solver"] = "analytical"#"lenstronomy"
 CFG["gw"]["error_scales"]["sigma_td"] = 0.001
-CFG["gw"]["error_scales"]["sigma_dL_eff"] = 0.1
-CFG["inference"]["num_chains"] = 10
+CFG["gw"]["error_scales"]["sigma_dL_eff"] = 0.05 #0.1 tstar error is large going to negative values
+CFG["inference"]["num_chains"] = 12
 CFG["inference"]["num_samples"] = 14000
-CFG["inference"]["num_warmup"] = 6000
+CFG["inference"]["num_warmup"] = 9000
 CFG["nautilus"] = {
     "n_live": 2000,
     "n_eff": 5000,
@@ -133,28 +133,26 @@ plot_system_observation(
 )
 plot_psf(ctx, cfg={"output": {"output_dir": OUTPUT_DIR, "save_psf_plot_path": "psf.png"}})
 
-Y0_LO, Y0_HI = 0.01992, 0.02005
-Y1_LO, Y1_HI = 0.0091, 0.0106
+Y0_LO, Y0_HI = -0.06, 0.06#0.018, 0.022#0.01992, 0.02005
+Y1_LO, Y1_HI = -0.06, 0.06#0.004, 0.016#0.0091, 0.0106
 
 PRIORS = {
     "lens1_gamma1": float(truth_params["lens1_gamma1"]),
     "lens1_gamma2": float(truth_params["lens1_gamma2"]),
     "lens1_ra_0": float(truth_params["lens1_ra_0"]),
     "lens1_dec_0": float(truth_params["lens1_dec_0"]),
-    # e1e2 mode (set lens_mass_parametrization="e1e2"):
-    # "lens0_e1": float(truth_params["lens0_e1"]),
-    # "lens0_e2": float(truth_params["lens0_e2"]),
-    # q_phi mode: fix phi to truth
-    "lens0_phi": float(truth_params["lens0_phi"]),
-    "lens0_q": dist.Uniform(0.75, 0.85),
     "lens0_theta_E": float(truth_params["lens0_theta_E"]),
     "lens0_center_x": float(truth_params["lens0_center_x"]),
     "lens0_center_y": float(truth_params["lens0_center_y"]),
-    "lens0_gamma": dist.Uniform(1.5, 2.4),
-    # "lens0_gamma": float(truth_params["lens0_gamma"]),
-    "T_star": float(truth_params["T_star"]),  # dist.Uniform(1e-1, 1e12),
-    # "dL": dist.Uniform(1e-5, 50000.0),
-    "dL": float(truth_params["dL"]),
+    # "T_star": float(truth_params["T_star"]),  # dist.Uniform(1e-1, 1e12),
+    # "dL": float(truth_params["dL"]), #dist.Uniform(1e-5, 50000.0),
+    # e1e2 mode (set lens_mass_parametrization="e1e2"):
+    # "lens0_e1": dist.Uniform(-0.5, 0.5),#float(truth_params["lens0_e1"]),
+    "lens0_e2": float(truth_params["lens0_e2"]),
+    # q_phi mode: fix phi to truth
+    "lens0_phi": float(truth_params["lens0_phi"]),
+    # "lens0_q": dist.Uniform(0.75, 0.85),
+    "lens0_gamma": float(truth_params["lens0_gamma"]),#dist.Uniform(1.5, 2.4), #float(truth_params["lens0_gamma"]),
     "y0gw": dist.Uniform(Y0_LO, Y0_HI),
     "y1gw": dist.Uniform(Y1_LO, Y1_HI),
 }

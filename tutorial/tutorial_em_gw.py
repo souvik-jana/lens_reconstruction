@@ -40,14 +40,11 @@ from gwemfish import (
 from gwemfish.corner_plot_utils import create_default_param_groups, plot_multi_comparison_corner
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-OUTPUT_DIR = os.path.join(REPO_ROOT, "tutorial", "outputs", "em_gw")
-os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 RUN_FISHER_SOURCE = True
 RUN_DERIV_APPROX_SOURCE = True
-RUN_NAUTILUS_SOURCE = True
+RUN_NAUTILUS_SOURCE = False
 
-NAUTILUS_CHECKPOINT = os.path.join(OUTPUT_DIR, "nautilus_checkpoint.hdf5")
 NAUTILUS_RESUME = False
 NAUTILUS_PRIOR_MODE = "fisher_h0"  # "fisher_h0" | "manual"
 NAUTILUS_SIGMA_SPAN = 2.0
@@ -84,15 +81,19 @@ def apply_fisher_h0_priors(ctx, span):
 
 CFG = make_default_cfg()
 CFG["use_parameter_layout"] = True
-CFG["gw"]["n_images"] = 2
+CFG["lens_mass_parametrization"] = "e1e2"#"e1e2"#"q_phi"  # "e1e2" to go back
+OUTPUT_DIR = os.path.join(REPO_ROOT, "tutorial", "outputs", "em_gw", CFG["lens_mass_parametrization"])
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+NAUTILUS_CHECKPOINT = os.path.join(OUTPUT_DIR, "nautilus_checkpoint.hdf5")
+CFG["gw"]["n_images"] = 4#2 
 CFG["gw"]["source_box_half_width"] = 0.8
-CFG["source_plane"]["n_images"] = 2
-CFG["gw"]["source_pos"] = (0.2, 0.01)
+CFG["source_plane"]["n_images"] = 4#2 # no need for em gw
+CFG["gw"]["source_pos"] = (0.02, 0.00001)#(0.02,0.01) #(0.2, 0.01) this is for 2 image configuration
 CFG["gw"]["error_scales"]["sigma_td"] = 0.001
-CFG["gw"]["error_scales"]["sigma_dL_eff"] = 0.1
-CFG["inference"]["num_chains"] = 10
+CFG["gw"]["error_scales"]["sigma_dL_eff"] = 0.1 
+CFG["inference"]["num_chains"] = 12
 CFG["inference"]["num_samples"] = 14000
-CFG["inference"]["num_warmup"] = 6000
+CFG["inference"]["num_warmup"] = 9000
 CFG["nautilus"] = {
     "n_live": 2000,
     "n_eff": 5000,
@@ -104,21 +105,21 @@ CFG["nautilus"] = {
 }
 CFG["output"]["output_dir"] = OUTPUT_DIR
 
-active = [
-    name
-    for name, flag in [
-        ("fisher-source", RUN_FISHER_SOURCE),
-        ("deriv-approx-source", RUN_DERIV_APPROX_SOURCE),
-        ("nautilus-source", RUN_NAUTILUS_SOURCE),
-    ]
-    if flag
-]
-print(f"Active methods: {', '.join(active) if active else '(none)'}")
-print(f"Nautilus prior mode: {NAUTILUS_PRIOR_MODE}, resume={NAUTILUS_RESUME}")
+# active = [
+#     name
+#     for name, flag in [
+#         ("fisher-source", RUN_FISHER_SOURCE),
+#         ("deriv-approx-source", RUN_DERIV_APPROX_SOURCE),
+#         ("nautilus-source", RUN_NAUTILUS_SOURCE),
+#     ]
+#     if flag
+# ]
+# print(f"Active methods: {', '.join(active) if active else '(none)'}")
+# print(f"Nautilus prior mode: {NAUTILUS_PRIOR_MODE}, resume={NAUTILUS_RESUME}")
 
 ctx = setup_em_observation(cfg=CFG)
 ctx = setup_gw_observation(ctx, cfg=ctx["cfg"])
-ctx = prune_gw_images(ctx, n_keep=2)
+# ctx = prune_gw_images(ctx, n_keep=2) # Turn this on for 2 image configuration
 
 truth_params = ctx["truth_params"]
 src = ctx["cfg"]["gw"]["source_pos"]
@@ -136,15 +137,20 @@ Y0_HI = float(src[0]) + src_hw
 Y1_LO = float(src[1]) - src_hw
 Y1_HI = float(src[1]) + src_hw
 
+Y0_LO, Y0_HI = -0.8, 0.8#0.018, 0.022#0.01992, 0.02005
+Y1_LO, Y1_HI = -0.8, 0.8#0.004, 0.016#0.0091, 0.0106
+
 PRIORS = {
-    "dL": float(truth_params["dL"]),
-    "T_star": float(truth_params["T_star"]),
+    # "dL": float(truth_params["dL"]),
+    # "T_star": float(truth_params["T_star"]),
     "lens1_ra_0": float(truth_params["lens1_ra_0"]),
     "lens1_dec_0": float(truth_params["lens1_dec_0"]),
     "y0gw": dist.Uniform(Y0_LO, Y0_HI),
     "y1gw": dist.Uniform(Y1_LO, Y1_HI),
 }
 ctx["cfg"]["priors"] = dict(PRIORS)
+
+# this is for nautilus-source method
 ctx["cfg"]["gw"]["source_plane_bounds"] = {
     "y0gw": (Y0_LO, Y0_HI),
     "y1gw": (Y1_LO, Y1_HI),

@@ -82,7 +82,7 @@ def apply_fisher_h0_priors(ctx, span):
 
 CFG = make_default_cfg()
 CFG["use_parameter_layout"] = True
-CFG["lens_mass_parametrization"] = "e1e2" #"e1e2"#"q_phi"  # "e1e2" to go back
+CFG["lens_mass_parametrization"] = "q_phi" #"e1e2"#"q_phi"  # "e1e2" to go back
 CFG["gw"]["n_images"] = 4#2
 CFG["gw"]["source_box_half_width"] = 0.8
 # CFG["source_plane"]["n_images"] = 2
@@ -90,7 +90,7 @@ CFG["gw"]["source_pos"] = (0.02, 0.00001)
 CFG["gw"]["solver_params"]["backend"] = "jaxtronomy"
 CFG["gw"]["solver_params"]["jaxtronomy"]["solver"] = "analytical"#"lenstronomy"
 CFG["gw"]["error_scales"]["sigma_td"] = 0.001
-CFG["gw"]["error_scales"]["sigma_dL_eff"] = 0.05 #0.1 tstar error is large going to negative values
+CFG["gw"]["error_scales"]["sigma_dL_eff"] = 0.1 #0.1 tstar error is large going to negative values
 CFG["inference"]["num_chains"] = 12
 CFG["inference"]["num_samples"] = 14000
 CFG["inference"]["num_warmup"] = 9000
@@ -131,8 +131,8 @@ plot_system_observation(
 )
 plot_psf(ctx, cfg={"output": {"output_dir": OUTPUT_DIR, "save_psf_plot_path": "psf.png"}})
 
-Y0_LO, Y0_HI = -0.06, 0.06#0.018, 0.022#0.01992, 0.02005
-Y1_LO, Y1_HI = -0.06, 0.06#0.004, 0.016#0.0091, 0.0106
+Y0_LO, Y0_HI = -0.6, 0.6#0.018, 0.022#0.01992, 0.02005
+Y1_LO, Y1_HI = -0.6, 0.6#0.004, 0.016#0.0091, 0.0106
 
 PRIORS = {
     "lens1_gamma1": float(truth_params["lens1_gamma1"]),

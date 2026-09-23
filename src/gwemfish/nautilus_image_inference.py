@@ -169,6 +169,18 @@ def build_image_plane_problem(ctx, mode, cfg):
             "nautilus-image supports mode 'GW-only', 'EM+GW', and 'EM-only' only"
         )
 
+    if bool((cfg_full.get("nautilus") or {}).get("jit", True)):
+        # Not a refusal: jit defaults to True, and this method simply has nothing
+        # to compile. Its likelihood is numpyro's log_density + trace, which walks
+        # the model in Python on every call (measured 8 compiles/call, 194 ms/call)
+        # -- there is no single arithmetic core to wrap. cfg['nautilus']['pool']
+        # still applies.
+        warnings.warn(
+            "cfg['nautilus']['jit'] is not implemented for method='nautilus-image' "
+            "(its likelihood is built by numpyro on every call); running eager. "
+            "Use cfg['nautilus']['pool'] to speed this method up."
+        )
+
     built = _build_inference_probmodel(ctx, mode, cfg_full)
     probmodel = built["probmodel"]
     likelihood_seed = built["likelihood_seed"]

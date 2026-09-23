@@ -166,6 +166,10 @@ ctx["cfg"]["nautilus"] = {
     "filepath": NAUTILUS_CHECKPOINT,
     "resume": True,
     "verbose": True,
+    # This script deliberately uses the legacy flat naming (use_parameter_layout
+    # = False above), which has no compiled likelihood path, so the default
+    # jit=True would refuse rather than silently run slow.
+    "jit": False,
 }
 
 resume_msg = ("resume " + NAUTILUS_CHECKPOINT

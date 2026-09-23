@@ -216,6 +216,13 @@ def build_em_only_nautilus_problem(ctx, cfg):
     truth_params = ctx.get("truth_params", {})
     em_data = jnp.array(em_obs["data"])
 
+    from .nautilus_jit_cores import check_jittable, em_loglike_core
+
+    jit = bool((cfg_full.get("nautilus") or {}).get("jit", True))
+    if jit:
+        check_jittable(cfg_full)
+        em_compiled = em_loglike_core(lens_image, noise, em_obs["data"])
+
     from .parameter_layout import (
         build_parameter_layout, build_priors_registry, unpack_to_kwargs,
     )
@@ -263,6 +270,10 @@ def build_em_only_nautilus_problem(ctx, cfg):
             full, entries, n_mass=n_mass,
             n_source=n_source, n_lens_light=n_lens_light,
         )
+        if jit:
+            return float(em_compiled(kwargs_lens, kwargs_source, kwargs_lens_light,
+                                     full["noise_sigma_bkg"]))
+
         sigma_bkg = float(full["noise_sigma_bkg"])
         model_image = lens_image.model(
             kwargs_lens=kwargs_lens,
@@ -275,7 +286,7 @@ def build_em_only_nautilus_problem(ctx, cfg):
                              + jnp.log(2 * jnp.pi * model_var)))
         )
 
-    print("Warming up EM-only log_likelihood (triggers JAX compilation)...")
+    print(f"Warming up EM-only log_likelihood (jit={jit}; compiles once)...")
     try:
         lv = log_likelihood(dict(truth_params))
         print(f"  warm-up log_likelihood = {lv:.4f}")
@@ -284,6 +295,208 @@ def build_em_only_nautilus_problem(ctx, cfg):
 
     param_names = list(prior.keys)
     return prior, log_likelihood, param_names
+
+
+def build_nautilus_problem(ctx, cfg, mode, method):
+    """(prior, log_likelihood, param_names) for any nautilus method and mode.
+
+    One dispatch, used both by the pipeline in the parent process and by each
+    pool worker, so a worker cannot build a different problem than the run it
+    joined.
+    """
+    if method == "nautilus-image":
+        from .nautilus_image_inference import build_image_plane_problem
+
+        return build_image_plane_problem(ctx, mode, cfg)
+
+    from .nautilus_source_inference import (
+        build_em_gw_source_plane_problem,
+        build_gw_source_plane_problem,
+    )
+
+    if mode == "GW-only":
+        return build_gw_source_plane_problem(ctx, cfg)
+    if mode == "EM+GW":
+        return build_em_gw_source_plane_problem(ctx, cfg)
+    if mode == "EM-only":
+        return build_em_only_nautilus_problem(ctx, cfg)
+    raise ValueError(
+        f"{method} supports mode 'GW-only', 'EM+GW', and 'EM-only' only, got {mode!r}"
+    )
+
+
+# Written into ctx by a previous fisher / deriv-approx run and not picklable: both
+# hold jitted closures (simple_pipeline.py:2097-2098 and :2114). Nautilus reads
+# neither, so a pool run strips them from its copy rather than failing at pool
+# startup, which is a place nobody would connect to the cause.
+UNPICKLABLE_CTX_KEYS = ("fisher", "likelihood")
+
+def sanitize_priors_for_pool(priors):
+    """Make cfg['priors'] shippable, or say exactly which entry is not.
+
+    ``parse_cfg_priors`` accepts callables, and a lambda cannot cross a process
+    boundary. It can be replaced by the distribution it produces, which is what
+    the eager path would have extracted anyway, so a callable prior costs a pool
+    run nothing.
+    """
+    import pickle
+
+    if not priors:
+        return priors
+
+    clean = {}
+    unshippable = []
+    for name, value in priors.items():
+        try:
+            pickle.dumps(value)
+            clean[name] = value
+            continue
+        except Exception:
+            pass
+
+        dist = _extract_dist_from_callable(value) if callable(value) else None
+        if dist is None:
+            unshippable.append(name)
+            continue
+        try:
+            pickle.dumps(dist)
+            clean[name] = dist
+        except Exception:
+            unshippable.append(name)
+
+    if unshippable:
+        raise TypeError(
+            f"cannot use cfg['nautilus']['pool']: these priors cannot be sent to a "
+            f"worker process and are not convertible to a distribution: "
+            f"{unshippable}. Use a numpyro distribution, a scipy distribution or a "
+            "fixed float for those keys, or run without a pool."
+        )
+    return clean
+
+
+def prepare_for_pool(ctx, cfg):
+    """Copies of ctx and cfg that survive the trip to a worker.
+
+    The caller's ctx is never mutated: a later method in the same script still
+    needs ctx['fisher'].
+    """
+    ctx_clean = {k: v for k, v in ctx.items() if k not in UNPICKLABLE_CTX_KEYS}
+    if isinstance(ctx_clean.get("cfg"), dict):
+        ctx_cfg = dict(ctx_clean["cfg"])
+        ctx_cfg["priors"] = sanitize_priors_for_pool(ctx_cfg.get("priors"))
+        ctx_clean["cfg"] = ctx_cfg
+
+    cfg_clean = dict(cfg)
+    cfg_clean["priors"] = sanitize_priors_for_pool(cfg_clean.get("priors"))
+    return ctx_clean, cfg_clean
+
+
+def init_pool_worker():
+    """Keep one worker to one core's worth of linear algebra.
+
+    Four workers each starting as many BLAS threads as there are cores turns a
+    speed-up into a slowdown. Nautilus applies this around its own neural-network
+    sections only, not around likelihood calls.
+    """
+    from threadpoolctl import threadpool_limits
+
+    threadpool_limits(1)
+
+
+class PicklableLikelihood:
+    """Ships the simulated system to a worker, which rebuilds the closure once.
+
+    The likelihood itself cannot be sent: every builder returns a function defined
+    inside another function, and pickle resolves functions by name.
+
+        AttributeError: Can't get local object
+                        'build_gw_source_plane_problem.<locals>.log_likelihood'
+
+    The whole ctx, by contrast, is ~56 KB of plain data and ships instantly, so
+    each worker gets the identical simulated system -- same noise realisation,
+    same observed data -- and rebuilds only the cheap part.
+    """
+
+    def __init__(self, ctx, cfg, mode, method):
+        self.ctx, self.cfg = prepare_for_pool(ctx, cfg)
+        self.mode = mode
+        self.method = method
+        self.log_likelihood = None
+
+    def __getstate__(self):
+        # The built closure is exactly the thing that cannot be pickled; each
+        # worker makes its own.
+        return {**self.__dict__, "log_likelihood": None}
+
+    def __call__(self, params):
+        if self.log_likelihood is None:
+            import os
+            import time
+
+            # Nautilus unpickles this object once per worker and keeps it
+            # (nautilus/pool.py:59-61 passes it as the pool initializer), so the
+            # rebuild below happens once per worker, not once per point.
+            init_pool_worker()
+            t0 = time.perf_counter()
+            _, self.log_likelihood, _ = build_nautilus_problem(
+                self.ctx, self.cfg, self.mode, self.method)
+            print(f"    [pid {os.getpid()}] built {self.method} {self.mode} "
+                  f"likelihood in {time.perf_counter() - t0:.1f}s", flush=True)
+        return self.log_likelihood(params)
+
+
+def check_pool_callable_from_here():
+    """Catch an unguarded caller script before multiprocessing's wall of text.
+
+    Workers are spawned, so each one re-imports the script that started the run.
+    If that script does its work at module level, the worker re-runs it, reaches
+    the same pooled ``run_inference`` call, and tries to create a pool of its own.
+    Python then raises ``RuntimeError: An attempt has been made to start a new
+    process before the current process has finished its bootstrapping phase``
+    from deep inside ``multiprocessing.spawn``, once per worker, which says
+    nothing about gwemfish.
+
+    Reaching this function from anywhere but the main process means exactly that
+    has happened.
+    """
+    import multiprocessing as mp
+
+    if mp.parent_process() is None:
+        return
+    raise RuntimeError(
+        "cfg['nautilus']['pool'] was reached inside a worker process, which means "
+        "the script that started this run does its work at module level. Pool "
+        "workers re-import that script, so it runs again in each of them and each "
+        "tries to start its own pool.\n"
+        "Fix: put the script's body under a guard, leaving imports and function "
+        "definitions above it:\n\n"
+        "    if __name__ == '__main__':\n"
+        "        ctx = setup_em_observation(cfg=CFG)\n"
+        "        ...\n"
+        "        run_inference(ctx, mode=..., method='nautilus-source', cfg=...)\n\n"
+        "Runs without a pool do not need the guard."
+    )
+
+
+def force_spawn_start_method():
+    """Workers must be fresh processes, not clones of this one.
+
+    ``nautilus/pool.py:3`` imports ``Pool`` plainly, so it takes the platform
+    default -- ``fork`` on Linux. Forking a process whose JAX threads are running
+    leaves the child holding locks owned by threads that do not exist in it, and
+    it hangs with no error (observed). macOS already defaults to spawn.
+
+    This is a process-wide setting, so it is flipped only when a pool is actually
+    requested, and it is announced.
+    """
+    import multiprocessing as mp
+
+    if mp.get_start_method(allow_none=True) == "spawn":
+        return
+    mp.set_start_method("spawn", force=True)
+    print("  nautilus pool: multiprocessing start method set to 'spawn' "
+          "(process-wide). Workers re-import your script, so its body must sit "
+          "under `if __name__ == \"__main__\":`.")
 
 
 def _prior_fingerprint(prior):
@@ -356,9 +569,26 @@ def _check_checkpoint_priors(prior, filepath, resume):
 
 def run_nautilus(prior, log_likelihood, *,
                  n_live=500, filepath=None, verbose=True,
-                 resume=True, prior_check=True, run_kwargs=None):
+                 resume=True, prior_check=True, pool=None, seed=None,
+                 equal_weight=False, equal_weight_boost=1.0,
+                 return_diagnostics=False, run_kwargs=None):
+    """Run the sampler and return the posterior samples.
+
+    By default returns the full unequal-weighted dead-point set plus a
+    ``weights`` array (normalized), matching standalone nautilus / the
+    geometry_ratios lenstronomy absolute script. Set ``equal_weight=True`` to
+    resample to i.i.d. draws with no ``weights`` key (nautilus default boost=1
+    keeps only ~1/max(w) points — usually too few for multimodal corners).
+
+    ``pool`` is an int: nautilus then creates the pool itself with
+    ``initializer=`` (``nautilus/pool.py:59``) and pickles the likelihood once per
+    worker instead of once per batch. Note that a seed reproduces a run only at a
+    *fixed* ``pool`` value -- nautilus dispatches points in different batches when
+    pooled, so the same seed with and without a pool explores differently.
+    """
     import json
 
+    import numpy as np
     import nautilus
 
     fp_new = sidecar = None
@@ -366,12 +596,18 @@ def run_nautilus(prior, log_likelihood, *,
             and hasattr(prior, "keys") and hasattr(prior, "dists")):
         fp_new, sidecar = _check_checkpoint_priors(prior, filepath, resume)
 
+    if pool:
+        check_pool_callable_from_here()
+        force_spawn_start_method()
+
     sampler = nautilus.Sampler(
         prior,
         log_likelihood,
         n_live=n_live,
         filepath=filepath,
         resume=resume,
+        pool=pool,
+        seed=seed,
     )
     if sidecar is not None:
         try:
@@ -381,8 +617,35 @@ def run_nautilus(prior, log_likelihood, *,
             warnings.warn(f"Could not write prior fingerprint sidecar '{sidecar}': {exc}")
     sampler.run(verbose=verbose, **(run_kwargs or {}))
 
-    points, _, _ = sampler.posterior(equal_weight=True)
+    points, log_w, _ = sampler.posterior(
+        equal_weight=bool(equal_weight),
+        equal_weight_boost=float(equal_weight_boost),
+    )
     param_names = list(prior.keys)
     samples_dict = {name: np.array(points[:, j])
                     for j, name in enumerate(param_names)}
+    if not equal_weight:
+        w = np.exp(np.asarray(log_w) - np.max(log_w))
+        samples_dict["weights"] = w / w.sum()
+
+    # Nautilus' own convergence diagnostics, taken from the sampler rather than
+    # recomputed: evidence, effective sample size and the likelihood-call count
+    # are what tell you whether the run converged or merely stopped.
+    diagnostics = {
+        "log_z": float(sampler.log_z),
+        "n_eff": float(sampler.n_eff),
+        "n_like": int(sampler.n_like),
+        "n_posterior_samples": int(points.shape[0]),
+        "n_live": int(n_live),
+        "pool": pool,
+        "seed": seed,
+        "equal_weight": bool(equal_weight),
+    }
+    print(f"  nautilus: log_z {diagnostics['log_z']:.4f}  "
+          f"n_eff {diagnostics['n_eff']:.1f}  n_like {diagnostics['n_like']}  "
+          f"samples {diagnostics['n_posterior_samples']}"
+          + ("" if equal_weight else "  (weighted)"))
+
+    if return_diagnostics:
+        return samples_dict, diagnostics
     return samples_dict

@@ -41,16 +41,13 @@ from gwemfish.corner_plot_utils import create_default_param_groups, plot_multi_c
 from gwemfish.fisher import invert_fisher_matrix
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-OUTPUT_DIR = os.path.join(REPO_ROOT, "tutorial", "outputs", "gw_only")
-os.makedirs(OUTPUT_DIR, exist_ok=True)
+
 
 RUN_FISHER_SOURCE = True
 RUN_DERIV_APPROX_SOURCE = True
-RUN_NAUTILUS_SOURCE = False
-
-NAUTILUS_CHECKPOINT = os.path.join(OUTPUT_DIR, "nautilus_checkpoint.hdf5")
+RUN_NAUTILUS_SOURCE = True
 NAUTILUS_RESUME = False
-NAUTILUS_PRIOR_MODE = "fisher_h0"  # "fisher_h0" | "manual"
+NAUTILUS_PRIOR_MODE = "manual" #"fisher_h0"  # "fisher_h0" | "manual"
 NAUTILUS_SIGMA_SPAN = 3.5
 
 METHOD_COLORS = {
@@ -83,6 +80,9 @@ def apply_fisher_h0_priors(ctx, span):
 CFG = make_default_cfg()
 CFG["use_parameter_layout"] = True
 CFG["lens_mass_parametrization"] = "q_phi" #"e1e2"#"q_phi"  # "e1e2" to go back
+OUTPUT_DIR = os.path.join(REPO_ROOT, "tutorial", "outputs", "gw_only", CFG["lens_mass_parametrization"])
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+NAUTILUS_CHECKPOINT = os.path.join(OUTPUT_DIR, "nautilus_checkpoint.hdf5")
 CFG["gw"]["n_images"] = 4#2
 CFG["gw"]["source_box_half_width"] = 0.8
 # CFG["source_plane"]["n_images"] = 2
@@ -146,6 +146,7 @@ PRIORS = {
     # "dL": float(truth_params["dL"]), #dist.Uniform(1e-5, 50000.0),
     # e1e2 mode (set lens_mass_parametrization="e1e2"):
     # "lens0_e1": dist.Uniform(-0.5, 0.5),#float(truth_params["lens0_e1"]),
+    "lens0_q": dist.Uniform(0.4, 0.9999),
     "lens0_e2": float(truth_params["lens0_e2"]),
     # q_phi mode: fix phi to truth
     "lens0_phi": float(truth_params["lens0_phi"]),
@@ -158,8 +159,8 @@ ctx["cfg"]["priors"] = dict(PRIORS)
 
 # This is for nautilus-source method
 ctx["cfg"]["gw"]["source_plane_bounds"] = {
-    "y0gw": (Y0_LO, Y0_HI),
-    "y1gw": (Y1_LO, Y1_HI),
+    "y0gw": (0.0,0.2),#(Y0_LO, Y0_HI),
+    "y1gw": (0.0,0.2),#(Y1_LO, Y1_HI),
 }
 
 samples_by_method = {}
@@ -261,6 +262,7 @@ if RUN_NAUTILUS_SOURCE:
                 "filepath": NAUTILUS_CHECKPOINT,
                 "resume": NAUTILUS_RESUME,
                 "prior_check": True,
+                "pool":4,
             },
             "output": {"output_dir": OUTPUT_DIR, "json_tag": "nautilus_source"},
         },

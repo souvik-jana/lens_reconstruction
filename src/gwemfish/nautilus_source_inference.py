@@ -13,6 +13,12 @@ import scipy.stats as sps
 
 from .lens_setup import build_lens_solver, solve_and_select
 from .data_sim import compute_gw_from_images
+from .nautilus_jit_cores import (
+    check_jittable,
+    em_loglike_core,
+    gw_loglike_core,
+    solve_core,
+)
 from .ellipticity_reparam import (
     expand_qphi_params,
     mass_qphi_prefixes_from_entries,
@@ -103,20 +109,65 @@ def _gw_extra_defaults(bounds, keys):
 
 def _solve_images(solver, solver_params, y0, y1, kwargs_lens,
                   lens_center_x, lens_center_y, n_images, lens_gw=None):
-    """Solve at one sampled point, rejecting configurations with the wrong image count.
+    """Solve at one sampled point and report how many distinct images came back.
 
     The count comes from ``select_images``' ``n_distinct``, not from ``len(x_pos)``:
     the returned array is always ``n_images`` long by construction, so a length test
     is a compile-time constant and can never fire. That is why the old check missed
     padded/duplicated helens solutions entirely.
+
+    The caller does the reject test, so that this and the compiled
+    ``nautilus_jit_cores.solve_core`` hand back the same three things.
     """
     x_pos, y_pos, _, flags = solve_and_select(
         solver, solver_params, jnp.array([y0, y1]), kwargs_lens, lens_gw,
         n_images, lens_center_x, lens_center_y,
     )
-    if int(flags["n_distinct"]) != n_images:
-        return None, None
-    return list(x_pos), list(y_pos)
+    return list(x_pos), list(y_pos), flags["n_distinct"]
+
+
+def nautilus_jit_enabled(cfg_full):
+    """Read cfg['nautilus']['jit'] and refuse the configurations it cannot serve."""
+    jit = bool((cfg_full.get("nautilus") or {}).get("jit", True))
+    if jit:
+        check_jittable(cfg_full)
+    return jit
+
+
+def _gw_core_pair(jit, solver, solver_params, lens_gw, gw_obs, error_scales, n_images):
+    """``(solve_fn, gw_loglike_fn)`` for either the compiled or the eager path.
+
+    Both halves honour the same contract, so each builder writes its likelihood
+    body once: ``solve_fn(y0, y1, kwargs_lens) -> (x_pos, y_pos, n_distinct)`` and
+    ``gw_loglike_fn(x_pos, y_pos, kwargs_lens, T_star, dL) -> float``.
+    """
+    if not jit:
+        def solve_fn(y0, y1, kwargs_lens):
+            return _solve_images(
+                solver, solver_params, y0, y1, kwargs_lens,
+                float(kwargs_lens[0].get("center_x", 0.0)),
+                float(kwargs_lens[0].get("center_y", 0.0)),
+                n_images, lens_gw=lens_gw,
+            )
+
+        def gw_loglike_fn(x_pos, y_pos, kwargs_lens, T_star, dL):
+            return _gw_loglike_from_images(x_pos, y_pos, kwargs_lens, lens_gw,
+                                           T_star, dL, gw_obs, error_scales)
+
+        return solve_fn, gw_loglike_fn
+
+    solve_compiled = solve_core(solver, solver_params, lens_gw, n_images)
+    gw_compiled = gw_loglike_core(lens_gw, gw_obs, error_scales)
+
+    def solve_fn(y0, y1, kwargs_lens):
+        return solve_compiled(y0, y1, kwargs_lens,
+                              kwargs_lens[0].get("center_x", 0.0),
+                              kwargs_lens[0].get("center_y", 0.0))
+
+    def gw_loglike_fn(x_pos, y_pos, kwargs_lens, T_star, dL):
+        return float(gw_compiled(x_pos, y_pos, kwargs_lens, T_star, dL))
+
+    return solve_fn, gw_loglike_fn
 
 
 def validate_helens_solver(solver, solver_params, kwargs_lens_truth,
@@ -255,6 +306,7 @@ def build_gw_source_plane_problem(ctx, cfg):
 
     bounds = {**DEFAULT_PRIORS_GW_SOURCE_PLANE, **gw_cfg.get("source_plane_bounds", {})}
 
+    jit = nautilus_jit_enabled(cfg_full)
     use_layout = bool(cfg_full.get("use_parameter_layout"))
     kwargs_truth = ctx["kwargs_lens"] if use_layout else _build_kwargs_lens(truth_params)
 
@@ -269,11 +321,8 @@ def build_gw_source_plane_problem(ctx, cfg):
                             tol=nautilus_cfg.get("solver_validation_tol", 0.05),
                             lens_gw=lens_gw)
 
-    def solve_fn(y0, y1, kwargs_lens):
-        cx = float(kwargs_lens[0].get("center_x", 0.0))
-        cy = float(kwargs_lens[0].get("center_y", 0.0))
-        return _solve_images(solver, solver_params, y0, y1, kwargs_lens, cx, cy,
-                             n_images, lens_gw=lens_gw)
+    solve_fn, gw_loglike_fn = _gw_core_pair(
+        jit, solver, solver_params, lens_gw, gw_obs, error_scales, n_images)
 
     if use_layout:
         from .parameter_layout import (
@@ -319,16 +368,13 @@ def build_gw_source_plane_problem(ctx, cfg):
         full = {**fixed_params, **params}
         full = expand_qphi_params(full, qphi_prefixes)
         kwargs_lens = make_kwargs_lens(full)
-        x_pos, y_pos = solve_fn(float(full["y0gw"]), float(full["y1gw"]), kwargs_lens)
-        if x_pos is None:
+        x_pos, y_pos, n_distinct = solve_fn(full["y0gw"], full["y1gw"], kwargs_lens)
+        if int(n_distinct) != n_images:
             return -1e300
-        return _gw_loglike_from_images(
-            x_pos, y_pos, kwargs_lens, lens_gw,
-            float(full["T_star"]), float(full["dL"]),
-            gw_obs, error_scales,
-        )
+        return gw_loglike_fn(x_pos, y_pos, kwargs_lens,
+                             full["T_star"], full["dL"])
 
-    print("Warming up GW source-plane log_likelihood (triggers JAX compilation)...")
+    print(f"Warming up GW source-plane log_likelihood (jit={jit}; compiles once)...")
     try:
         src_truth = list(gw_cfg.get("source_pos", [0.05, 1e-6]))
         warmup_src = (truth_params.get("y0gw", src_truth[0]),
@@ -361,6 +407,7 @@ def build_em_gw_source_plane_problem(ctx, cfg):
 
     bounds = {**DEFAULT_PRIORS_GW_SOURCE_PLANE, **gw_cfg.get("source_plane_bounds", {})}
 
+    jit = nautilus_jit_enabled(cfg_full)
     use_layout = bool(cfg_full.get("use_parameter_layout"))
     kwargs_truth = ctx["kwargs_lens"] if use_layout else _build_kwargs_lens(truth_params)
 
@@ -375,13 +422,29 @@ def build_em_gw_source_plane_problem(ctx, cfg):
                             tol=nautilus_cfg.get("solver_validation_tol", 0.05),
                             lens_gw=lens_gw)
 
-    def solve_fn(y0, y1, kwargs_lens):
-        cx = float(kwargs_lens[0].get("center_x", 0.0))
-        cy = float(kwargs_lens[0].get("center_y", 0.0))
-        return _solve_images(solver, solver_params, y0, y1, kwargs_lens, cx, cy,
-                             n_images, lens_gw=lens_gw)
+    solve_fn, gw_loglike_fn = _gw_core_pair(
+        jit, solver, solver_params, lens_gw, gw_obs, error_scales, n_images)
 
     em_data = jnp.array(em_obs["data"])
+
+    if jit:
+        em_compiled = em_loglike_core(lens_image, noise, em_obs["data"])
+
+        def em_loglike_fn(kwargs_lens, kwargs_source, kwargs_lens_light, sigma_bkg):
+            return float(em_compiled(kwargs_lens, kwargs_source,
+                                     kwargs_lens_light, sigma_bkg))
+    else:
+        def em_loglike_fn(kwargs_lens, kwargs_source, kwargs_lens_light, sigma_bkg):
+            model_image = lens_image.model(
+                kwargs_lens=kwargs_lens,
+                kwargs_source=kwargs_source,
+                kwargs_lens_light=kwargs_lens_light,
+            )
+            model_var = noise.C_D_model(model_image, background_rms=float(sigma_bkg))
+            return float(
+                jnp.sum(-0.5 * ((em_data - model_image) ** 2 / model_var
+                                 + jnp.log(2 * jnp.pi * model_var)))
+            )
 
     if use_layout:
         from .parameter_layout import (
@@ -400,11 +463,15 @@ def build_em_gw_source_plane_problem(ctx, cfg):
         )
         registry = build_priors_registry(entries, lens_image=lens_image, user_priors=None)
         default_dists, registry_fixed = layout_defaults_from_registry(entries, registry)
-        default_dists.update({
-            "T_star": _GW_DEFAULT_DISTS["T_star"](bounds["T_star"]),
-            "dL": _GW_DEFAULT_DISTS["dL"](bounds["dL"]),
-            "noise_sigma_bkg": EM_EXTRA_DEFAULT_DISTS["noise_sigma_bkg"](None),
-        })
+        # y0gw/y1gw are sampled here exactly as the GW-only builder does, and as
+        # FlexProbModelSourcePlaneEMGW / ProbModelSourcePlane do. Pinning them to
+        # the EM source centre instead -- which this builder used to do -- made
+        # nautilus-source fit 23 parameters against fisher-source's 25, and
+        # silently dropped any cfg["priors"]["y0gw"], because build_nautilus_prior
+        # only iterates over default_dists.
+        default_dists.update(
+            _gw_extra_defaults(bounds, ("T_star", "dL", "y0gw", "y1gw")))
+        default_dists["noise_sigma_bkg"] = EM_EXTRA_DEFAULT_DISTS["noise_sigma_bkg"](None)
         n_mass = len(lens_image.MassModel.func_list)
         n_source = len(lens_image.SourceModel.func_list)
         n_lens_light = len(lens_image.LensLightModel.func_list)
@@ -439,19 +506,18 @@ def build_em_gw_source_plane_problem(ctx, cfg):
                 full, entries, n_mass=n_mass,
                 n_source=n_source, n_lens_light=n_lens_light,
             )
-            y0 = float(kwargs_source[0]["center_x"])
-            y1 = float(kwargs_source[0]["center_y"])
         else:
             kwargs_lens = _build_kwargs_lens(full)
-            y0, y1 = float(full["y0gw"]), float(full["y1gw"])
             kwargs_source = [{
                 "amp": float(full["source_amp"]),
                 "R_sersic": float(full["source_R_sersic"]),
                 "n_sersic": float(full["source_n"]),
                 "e1": float(full["source_e1"]),
                 "e2": float(full["source_e2"]),
-                "center_x": y0,
-                "center_y": y1,
+                # Legacy naming has no separate EM source centre: the one source
+                # is at y0gw/y1gw, which is what EM_EXTRA_DEFAULT_DISTS offers.
+                "center_x": float(full["y0gw"]),
+                "center_y": float(full["y1gw"]),
             }]
             kwargs_lens_light = [{
                 "amp": float(full["light_amp"]),
@@ -463,36 +529,22 @@ def build_em_gw_source_plane_problem(ctx, cfg):
                 "center_y": float(full["light_center_y"]),
             }]
 
-        x_pos, y_pos = solve_fn(y0, y1, kwargs_lens)
-        if x_pos is None:
+        x_pos, y_pos, n_distinct = solve_fn(full["y0gw"], full["y1gw"], kwargs_lens)
+        if int(n_distinct) != n_images:
             return -1e300
 
-        loglike_gw = _gw_loglike_from_images(
-            x_pos, y_pos, kwargs_lens, lens_gw,
-            float(full["T_star"]), float(full["dL"]),
-            gw_obs, error_scales,
-        )
-
-        sigma_bkg = float(full["noise_sigma_bkg"])
-        model_image = lens_image.model(
-            kwargs_lens=kwargs_lens,
-            kwargs_source=kwargs_source,
-            kwargs_lens_light=kwargs_lens_light,
-        )
-        model_var = noise.C_D_model(model_image, background_rms=sigma_bkg)
-        loglike_em = float(
-            jnp.sum(-0.5 * ((em_data - model_image) ** 2 / model_var
-                             + jnp.log(2 * jnp.pi * model_var)))
-        )
+        loglike_gw = gw_loglike_fn(x_pos, y_pos, kwargs_lens,
+                                   full["T_star"], full["dL"])
+        loglike_em = em_loglike_fn(kwargs_lens, kwargs_source, kwargs_lens_light,
+                                   full["noise_sigma_bkg"])
         return loglike_gw + loglike_em
 
-    print("Warming up EM+GW source-plane log_likelihood (triggers JAX compilation)...")
+    print(f"Warming up EM+GW source-plane log_likelihood (jit={jit}; compiles once)...")
     try:
         warmup_params = dict(truth_params)
-        if not use_layout:
-            src_truth = list(gw_cfg.get("source_pos", [0.05, 1e-6]))
-            warmup_params.setdefault("y0gw", src_truth[0])
-            warmup_params.setdefault("y1gw", src_truth[1])
+        src_truth = list(gw_cfg.get("source_pos", [0.05, 1e-6]))
+        warmup_params.setdefault("y0gw", src_truth[0])
+        warmup_params.setdefault("y1gw", src_truth[1])
         lv = log_likelihood(warmup_params)
         print(f"  warm-up log_likelihood = {lv:.4f}")
     except Exception as e:

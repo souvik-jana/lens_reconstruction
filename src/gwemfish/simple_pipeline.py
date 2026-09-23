@@ -195,6 +195,7 @@ def _save_pipeline_json(
     samples_image_plane: Optional[Dict[str, Any]] = None,
     truths_image_plane: Optional[Dict[str, Any]] = None,
     source_plane_samples: Optional[Dict[str, Any]] = None,
+    sampler_diagnostics: Optional[Dict[str, Any]] = None,
 ) -> None:
     """Save key setup/injection/sample artifacts as JSON if path is provided."""
     if not path:
@@ -229,6 +230,9 @@ def _save_pipeline_json(
         "samples_source_plane": source_plane_samples,
         "fisher": fisher_block,
         "diagnostics": (ctx or {}).get("diagnostics"),
+        # The sampler's own convergence record (nautilus: log_z / n_eff / n_like).
+        # A saved run without it cannot be judged converged after the fact.
+        "sampler_diagnostics": sampler_diagnostics,
     }
     _ensure_parent_dir(path)
     with open(path, "w", encoding="utf-8") as f:
@@ -1761,44 +1765,44 @@ def _build_inference_probmodel_source_plane(ctx, mode, cfg_full):
 
 def _run_nautilus_source_inference(ctx, mode, cfg_full):
     """Dispatch Nautilus source-plane nested sampling."""
-    from .nautilus_common import build_em_only_nautilus_problem
-    from .nautilus_source_inference import (
-        build_em_gw_source_plane_problem,
-        build_gw_source_plane_problem,
-    )
+    from .nautilus_common import build_nautilus_problem
 
-    if mode == "GW-only":
-        prior, loglike, param_names = build_gw_source_plane_problem(ctx, cfg_full)
-    elif mode == "EM+GW":
-        prior, loglike, param_names = build_em_gw_source_plane_problem(ctx, cfg_full)
-    elif mode == "EM-only":
-        prior, loglike, param_names = build_em_only_nautilus_problem(ctx, cfg_full)
-    else:
-        raise ValueError(
-            "nautilus-source supports mode 'GW-only', 'EM+GW', and 'EM-only' only"
-        )
-
-    return _finish_nautilus_run(ctx, cfg_full, prior, loglike, param_names, "nautilus_source")
+    prior, loglike, param_names = build_nautilus_problem(
+        ctx, cfg_full, mode, "nautilus-source")
+    return _finish_nautilus_run(ctx, cfg_full, prior, loglike, param_names,
+                                "nautilus_source", mode, "nautilus-source")
 
 
 def _run_nautilus_image_inference(ctx, mode, cfg_full):
     """Dispatch Nautilus image-plane nested sampling (GW image_x/y sampling)."""
-    from .nautilus_image_inference import build_image_plane_problem
+    from .nautilus_common import build_nautilus_problem
 
-    prior, loglike, param_names = build_image_plane_problem(ctx, mode, cfg_full)
-    return _finish_nautilus_run(ctx, cfg_full, prior, loglike, param_names, "nautilus_image")
+    prior, loglike, param_names = build_nautilus_problem(
+        ctx, cfg_full, mode, "nautilus-image")
+    return _finish_nautilus_run(ctx, cfg_full, prior, loglike, param_names,
+                                "nautilus_image", mode, "nautilus-image")
 
 
-def _finish_nautilus_run(ctx, cfg_full, prior, loglike, param_names, method_tag):
-    from .nautilus_common import run_nautilus
+def _finish_nautilus_run(ctx, cfg_full, prior, loglike, param_names, method_tag,
+                         mode, method):
+    from .nautilus_common import PicklableLikelihood, run_nautilus
 
-    _skip = {"solver_backend", "solver_validation_tol"}
+    # 'jit' is consumed by the builders, which have already run; forwarding it to
+    # run_nautilus would be a TypeError.
+    _skip = {"solver_backend", "solver_validation_tol", "jit"}
     n_cfg = cfg_full.get("nautilus", {})
     run_kwarg_keys = {"n_eff", "n_like_max", "discard_exploration", "timeout"}
     run_kwargs = {k: v for k, v in n_cfg.items() if k in run_kwarg_keys}
     nautilus_top = {k: v for k, v in n_cfg.items()
                     if k not in _skip and k not in run_kwarg_keys}
-    samples = run_nautilus(prior, loglike, run_kwargs=run_kwargs, **nautilus_top)
+
+    if nautilus_top.get("pool"):
+        # The closure built above cannot cross a process boundary; the workers get
+        # the ctx and rebuild their own.
+        loglike = PicklableLikelihood(ctx, cfg_full, mode, method)
+
+    samples, diagnostics = run_nautilus(prior, loglike, run_kwargs=run_kwargs,
+                                        return_diagnostics=True, **nautilus_top)
     add_qphi_columns_to_samples(samples)
 
     truth_params = ctx.get("truth_params", {}) or {}
@@ -1818,7 +1822,8 @@ def _finish_nautilus_run(ctx, cfg_full, prior, loglike, param_names, method_tag)
     _save_dict_npz(save_truths_path, truths_dict)
     _save_pipeline_json(save_json_path, ctx=ctx,
                         samples_image_plane=samples,
-                        truths_image_plane=truths_dict)
+                        truths_image_plane=truths_dict,
+                        sampler_diagnostics=diagnostics)
     return samples, truths_dict
 
 
@@ -2289,8 +2294,11 @@ def _plot_samples_common(
     if truths is None:
         truths = {}
 
+    weights = samples.get("weights")
+    samples_params = {k: v for k, v in samples.items() if k != "weights"}
+
     if plot_mode == "groupwise":
-        param_groups = create_default_param_groups(samples)
+        param_groups = create_default_param_groups(samples_params)
         truths_dict = {
             group: {p: float(truths[p]) for p in params if p in truths}
             for group, params in param_groups.items()
@@ -2298,8 +2306,10 @@ def _plot_samples_common(
         grouped_kw: Dict[str, Any] = {}
         if plot_cfg.get("hist_kwargs") is not None:
             grouped_kw["hist_kwargs"] = plot_cfg["hist_kwargs"]
+        if weights is not None:
+            grouped_kw["weights"] = np.asarray(weights)
         return plot_grouped_corner(
-            samples_dict=samples,
+            samples_dict=samples_params,
             param_groups=param_groups,
             truths_dict=truths_dict,
             color=color,
@@ -2315,12 +2325,16 @@ def _plot_samples_common(
     if plot_mode in ("combined", "subset"):
         params_to_plot = plot_cfg.get("params_to_plot")
         if params_to_plot is None:
-            params_to_plot = list(samples.keys())
+            params_to_plot = list(samples_params.keys())
+        else:
+            params_to_plot = [p for p in params_to_plot if p != "weights"]
         custom_kw: Dict[str, Any] = {}
         if plot_cfg.get("hist_kwargs") is not None:
             custom_kw["hist_kwargs"] = plot_cfg["hist_kwargs"]
+        if weights is not None:
+            custom_kw["weights"] = np.asarray(weights)
         return plot_custom_params(
-            samples=samples,
+            samples=samples_params,
             params_to_plot=params_to_plot,
             truths=truths,
             color=color,

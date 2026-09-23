@@ -1,8 +1,31 @@
 # nautilus-source and the gradient methods fit different EM+GW models
 
-**Status:** open
-**Where:** `src/gwemfish/nautilus_source_inference.py:442-443`
+**Status:** RESOLVED
+**Where:** `src/gwemfish/nautilus_source_inference.py`, `build_em_gw_source_plane_problem`
 **Found:** while benchmarking the nautilus prototype (`nautilus-parallel-check/REPORT.md`)
+**Tests:** `tests/test_nautilus_jit_pool.py::test_em_gw_samples_gw_source_independently`
+
+## Resolution
+
+`build_em_gw_source_plane_problem` now adds `y0gw`/`y1gw` to `default_dists` via
+the same `_gw_extra_defaults(...)` call the GW-only builder uses, and passes them
+to the solver instead of `kwargs_source[0]["center_x"/"center_y"]`. EM+GW
+nautilus-source therefore samples 25 parameters -- exactly the set
+`fisher-source` reports free, verified with no missing and no extra keys -- and
+`cfg["priors"]["y0gw"]` is honoured instead of silently dropped.
+
+Measured on the tutorial-style EM+GW system after the fix: `logL(truth) = +976.0`
+against a best random prior draw of -28038, i.e. truth is the maximum again. The
+old behaviour gave `logL(truth) = -472283` with random draws scoring 1.6e5
+log-units better, which is what made nautilus return `n_eff = 1` after 500,000
+calls.
+
+Note this changes EM+GW `nautilus-source` posteriors by design: the model being
+fitted was wrong, and is now the same model the gradient methods fit.
+
+**NOTE:** the legacy naming (`use_parameter_layout=False`) still places the EM
+source at `y0gw`/`y1gw`; that flat layout has no separate EM source centre, so
+one source seen two ways is the correct reading there.
 
 ## Issue
 

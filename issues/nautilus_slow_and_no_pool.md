@@ -1,9 +1,35 @@
 # Nautilus: 6 XLA recompiles per likelihood call, and `pool=N` cannot be used
 
-**Status:** open (prototype exists, not merged)
-**Where:** `src/gwemfish/nautilus_common.py`, `nautilus_source_inference.py`, `nautilus_image_inference.py`
-**Prototype:** `nautilus-parallel-check/` (committed, isolated, no `src/gwemfish` changes)
-**Measurements:** `nautilus-parallel-check/REPORT.md`
+**Status:** RESOLVED -- merged as `cfg["nautilus"]["jit"]` (default `True`) and
+`cfg["nautilus"]["pool"]` (default `None`), plus `["seed"]`
+**Where:** `src/gwemfish/nautilus_jit_cores.py` (new), `nautilus_common.py`,
+`nautilus_source_inference.py`, `nautilus_image_inference.py`, `simple_pipeline.py`
+**Prototype:** `nautilus-parallel-check/` (superseded by the merge)
+**Measurements:** `nautilus-parallel-check/REPORT.md`, and post-merge in
+`nautilus-fix-analysis/FINDINGS.md`
+**Tests:** `tests/test_nautilus_jit_pool.py`
+
+## Resolution
+
+Both causes are fixed and both defaults are safe: `jit=True` is faster with
+identical numbers, `pool=None` behaves exactly as before.
+
+- `jit` compiles the three hot cores (`nautilus_jit_cores.py`). Post-merge, 200
+  draws per mode: max relative difference 1.07e-12 (GW-only), 2.48e-13 (EM+GW),
+  1.93e-15 (EM-only); compiles/call 6 -> 0; 159 -> 9.3 ms (GW-only), 168 -> 3.6 ms
+  (EM+GW).
+- `pool` ships the ctx and lets each worker rebuild its own closure
+  (`PicklableLikelihood`), forcing `spawn` only when a pool is requested.
+  Callable priors are converted to their distribution before shipping instead of
+  refusing.
+- `nautilus-image` gets `pool` but warns and runs eager on `jit`: its likelihood
+  is rebuilt by numpyro on every call, so there is no arithmetic core to compile.
+- `run_nautilus` now also captures nautilus' own `log_z` / `n_eff` / `n_like`
+  into the saved run json, which it previously discarded.
+- Refused rather than silently wrong: `use_mst=True` and
+  `use_parameter_layout=False` raise under `jit=True`.
+- `fisher-source` and `deriv-approx-source` verified bit-identical before and
+  after (`nautilus-fix-analysis/baseline_methods.py`).
 
 ## Issue
 

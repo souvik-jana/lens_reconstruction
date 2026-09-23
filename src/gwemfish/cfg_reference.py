@@ -657,6 +657,34 @@ COMPLETE_CFG = {
                            # would silently resume the OLD problem.
         "resume": True,    # bool -> nautilus.Sampler(resume=...).
         "verbose": True,   # bool -> sampler.run(verbose=...).
+        "seed": None,      # int or None -> nautilus.Sampler(seed=...). None = nautilus' own
+                           # randomness, so two runs of the same problem differ in log_z/n_eff.
+                           # Fix it to reproduce a run, or to compare two code paths. NOTE: a
+                           # seed reproduces a run only at a FIXED 'pool' value -- nautilus
+                           # dispatches points in different batches when pooled, so the same
+                           # seed with and without a pool explores differently (measured:
+                           # log_z -63.709 serial vs -63.987 at pool=2, same seed).
+        "pool": None,      # int or None -> nautilus.Sampler(pool=...). N worker PROCESSES
+                           # evaluating N points at once. Measured 2.8x at pool=4 on GW-only,
+                           # 2.7x on EM+GW, 1.7x on EM-only (nautilus' own neural-network
+                           # training stays serial, so the gain is bounded by how much of the
+                           # run is likelihood). Requirements, all pooled runs:
+                           #   * your script's body must sit under
+                           #     `if __name__ == "__main__":` -- workers are fresh processes
+                           #     ('spawn' is forced, because forking a process with JAX threads
+                           #     running deadlocks) and they re-import your script;
+                           #   * setting it flips multiprocessing's start method PROCESS-WIDE,
+                           #     announced on stdout, and only when pool is truthy;
+                           #   * pool <= the cores you have; each worker is a full Python+JAX
+                           #     process, so RAM scales with N too;
+                           #   * cfg['priors'] entries that are lambdas are converted to their
+                           #     distribution before shipping; one that cannot be converted
+                           #     raises TypeError naming the key.
+                           # Workers do NOT re-simulate: they receive a copy of ctx (~56 KB,
+                           # minus the unpicklable 'fisher'/'likelihood' entries a previous
+                           # fisher/deriv-approx run left there, which nautilus never reads and
+                           # which are NOT removed from the caller's own ctx) and rebuild only
+                           # the solver/prior/likelihood, ~2.5 s per worker.
         "prior_check": True,  # bool, DEFAULT True (nautilus_common.run_nautilus). On every
                               # checkpointed run, writes a prior-fingerprint sidecar
                               # <filepath>.priors.json (per-parameter ppf quantiles; for Uniform
@@ -673,9 +701,28 @@ COMPLETE_CFG = {
         "n_like_max": None,          # int or None. Max likelihood evaluations before stopping.
         "discard_exploration": None,  # bool or None. Discard the exploration-phase live points.
         "timeout": None,             # float or None, seconds. Wall-clock stop condition.
-        # The following two are consumed directly by nautilus_source_inference /
+        # The following are consumed directly by nautilus_source_inference /
         # nautilus_image_inference (NOT forwarded to nautilus.Sampler or sampler.run at all --
         # simple_pipeline._finish_nautilus_run explicitly skips them via its `_skip` set):
+        # Compile the likelihood once instead of letting JAX re-translate it on every call.
+        # Without it, herculens' EPL profile recompiles its inner loop every call (its @jit
+        # loop body is created inside R_omega, so the compile cache key is a fresh function
+        # object and every lookup misses): 6 XLA programs per call, ~65 ms of a 110-135 ms
+        # call, on all ~1e5 calls of a run. Measured with it: 134 -> 8.4 ms/call GW-only,
+        # 133 -> 3.1 ms EM+GW, answers equal to 1e-13 relative and posteriors identical at a
+        # fixed seed. EM-only gains little (herculens already jits lens_image.model, so there
+        # was no recompilation to remove).
+        "jit": True,        # bool. Applies to nautilus-source in every mode, and to EM-only
+                            # under either nautilus method. REFUSES (NotImplementedError) two
+                            # configurations rather than returning a plausible wrong number:
+                            # use_mst=True (k_mst is assigned onto lens_image.MassModel, which
+                            # herculens treats as a static jit argument) and
+                            # use_parameter_layout=False (the legacy lens_theta_E/lens_e1
+                            # naming has no compiled path). Set False for those.
+                            # method='nautilus-image' WARNS and runs eager: its likelihood is
+                            # numpyro's log_density+trace, rebuilt in Python on every call, so
+                            # there is no arithmetic core to compile (measured 8 compiles/call,
+                            # 194 ms/call). Use 'pool' for that method instead.
         # Newton polish on/off -- nautilus-source ONLY, and the only method where it is a
         # choice. Nested sampling needs no derivatives, so skipping the polish here costs
         # accuracy rather than correctness; every gradient-based method requires it and
@@ -687,6 +734,14 @@ COMPLETE_CFG = {
                             # backend='auto' on EPL+SHEAR this means nautilus-source is both
                             # faster and more accurate than the historical raw-helens path.
                             # False reproduces that historical path exactly, at its cost.
+        "equal_weight": False,  # bool. False (DEFAULT): save all dead points + normalized
+                            # 'weights' array (same as standalone nautilus / lenstronomy
+                            # absolute scripts). True: resample to i.i.d. draws with no
+                            # weights key; with equal_weight_boost=1 that keeps only
+                            # ~1/max(w) points — usually too few for multimodal corners.
+        "equal_weight_boost": 1.0,  # float. Only used when equal_weight=True; see nautilus
+                            # Sampler.posterior. Raise this to allow duplicates and get
+                            # closer to the weighted posterior.
         "solver_backend": "helens",  # DEPRECATED alias of solver_params['backend'], which
                                      # applies to every method rather than nautilus alone.
                                      # Still honoured; emits a DeprecationWarning.
